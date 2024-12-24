@@ -1,6 +1,6 @@
-module github.com/szuwgh/villus
+module github.com/szuwgh/pernis
 
-go 1.17
+go 1.23.3
 
 require github.com/spf13/cobra v1.4.0
 

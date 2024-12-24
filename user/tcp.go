@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf/link"
-	"github.com/szuwgh/villus/common/vlog"
+	"github.com/szuwgh/pernis/common/vlog"
 )
 
 // ebpf可通过跟踪内核函数，统计不同层次的网络流量。各层的流量差异主要在于包头，重传，控制报文等等。

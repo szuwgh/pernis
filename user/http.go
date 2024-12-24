@@ -12,8 +12,13 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
-	"github.com/szuwgh/villus/common/vlog"
+
+	//"github.com/cilium/ebpf/ringbuf"
+	"github.com/szuwgh/pernis/common/byteorder"
+	"github.com/szuwgh/pernis/common/vlog"
+	"github.com/szuwgh/pernis/network"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,6 +35,55 @@ type SoEvent struct {
 	SrcPort       uint16
 	DstPort       uint16
 	PayloadLength uint32
+}
+
+func AttachSysConnectKprobe() (err error) {
+
+	if err := loadBpfObjects(&objs, nil); err != nil {
+		vlog.Fatalf("loading objects: %v", err)
+	}
+	defer objs.Close()
+
+	kp, err := link.Kprobe("__sys_accept4", objs.KprobeSysConnect, nil)
+	if err != nil {
+		vlog.Fatalf("opening kprobe: %s", err)
+	}
+	defer kp.Close()
+
+	tp, err := link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSyscallsSysExitConnect, nil)
+	if err != nil {
+		vlog.Fatalf("opening tracepoint: %s", err)
+	}
+	defer tp.Close()
+	connEvtReader, err := perf.NewReader(objs.ConnEvtRb, os.Getpagesize()) //ringbuf.NewReader(objs.ConnEvtRb)
+	if err != nil {
+		vlog.Fatal("new connEvtReader perf err:", err)
+		return
+	}
+	defer connEvtReader.Close()
+
+	for {
+		record, err := connEvtReader.Read()
+		if err != nil {
+			if errors.Is(err, perf.ErrClosed) {
+				vlog.Println("[connEvtReader] Received signal, exiting..")
+				return err
+			}
+			vlog.Printf("[connEvtReader] reading from reader: %s\n", err)
+			continue
+		}
+		var event bpfConnInfoEvt
+		err = binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event)
+		if err != nil {
+			return err
+		}
+		conn := &network.Connection{
+			LocalIp:  byteorder.IntToBytes(event.Saddr.In4.SinAddr.S_addr),
+			RemoteIp: byteorder.IntToBytes(event.Daddr.In4.SinAddr.S_addr),
+		}
+		vlog.Println(conn.LocalIp.String(), conn.RemoteIp.String())
+	}
+	return nil
 }
 
 func AttachSocket() error {

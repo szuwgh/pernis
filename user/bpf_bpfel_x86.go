@@ -13,24 +13,47 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type bpfDataKey struct {
-	SrcIp   uint32
-	DstIp   uint32
-	SrcPort uint16
-	DstPort uint16
+type bpfConnInfoEvt struct {
+	ConnId struct {
+		Upid bpfUpidT
+		Fd   int32
+		_    [4]byte
+		Tsid uint64
+	}
+	Saddr struct {
+		In4 struct {
+			SinFamily uint16
+			SinPort   uint16
+			SinAddr   struct{ S_addr uint32 }
+			Pad       [8]uint8
+		}
+		_ [12]byte
+	}
+	Daddr struct {
+		In4 struct {
+			SinFamily uint16
+			SinPort   uint16
+			SinAddr   struct{ S_addr uint32 }
+			Pad       [8]uint8
+		}
+		_ [12]byte
+	}
+	Protocol int32
+	_        [4]byte
 }
 
-type bpfDataValue struct{ Timestamp int32 }
+type bpfSoEvent struct {
+	SrcAddr       uint32
+	DstAddr       uint32
+	SrcPort       uint16
+	DstPort       uint16
+	PayloadLength uint32
+}
 
-type bpfSslDataEventT struct {
-	Type        int32
-	_           [4]byte
-	TimestampNs uint64
-	Pid         uint32
-	Tid         uint32
-	DataLen     int32
-	Data        [4000]int8
-	_           [4]byte
+type bpfUpidT struct {
+	Pid            uint32
+	Tgid           uint32
+	StartTimeTicks uint64
 }
 
 // loadBpf returns the embedded CollectionSpec for bpf.
@@ -48,9 +71,9 @@ func loadBpf() (*ebpf.CollectionSpec, error) {
 //
 // The following types are suitable as obj argument:
 //
-//     *bpfObjects
-//     *bpfPrograms
-//     *bpfMaps
+//	*bpfObjects
+//	*bpfPrograms
+//	*bpfMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
 func loadBpfObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
@@ -74,22 +97,29 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	KtcpCleanupRbuf   *ebpf.ProgramSpec `ebpf:"ktcp_cleanup_rbuf"`
-	KtcpSendmsg       *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
-	SocketHander      *ebpf.ProgramSpec `ebpf:"socket_hander"`
-	TcEgress          *ebpf.ProgramSpec `ebpf:"tc_egress"`
-	UprobeSSL_read    *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write   *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
+	KprobeSysAccept                  *ebpf.ProgramSpec `ebpf:"kprobe_sys_accept"`
+	KprobeSysConnect                 *ebpf.ProgramSpec `ebpf:"kprobe_sys_connect"`
+	KtcpCleanupRbuf                  *ebpf.ProgramSpec `ebpf:"ktcp_cleanup_rbuf"`
+	KtcpSendmsg                      *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
+	SocketHander                     *ebpf.ProgramSpec `ebpf:"socket_hander"`
+	TcEgress                         *ebpf.ProgramSpec `ebpf:"tc_egress"`
+	TracepointSyscallsSysExitAccept4 *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
+	TracepointSyscallsSysExitConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_connect"`
+	UprobeSSL_read                   *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
+	UprobeSsL_write                  *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read                *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
+	UretprobeSslWrite                *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
+	AcceptArgsMap         *ebpf.MapSpec `ebpf:"accept_args_map"`
 	ActiveSslReadArgsMap  *ebpf.MapSpec `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.MapSpec `ebpf:"active_ssl_write_args_map"`
+	ConnEvtRb             *ebpf.MapSpec `ebpf:"conn_evt_rb"`
+	ConnectArgsMap        *ebpf.MapSpec `ebpf:"connect_args_map"`
 	DataBufferHeap        *ebpf.MapSpec `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.MapSpec `ebpf:"httpevent"`
 	Ipv4RecvBytes         *ebpf.MapSpec `ebpf:"ipv4_recv_bytes"`
@@ -118,8 +148,11 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
+	AcceptArgsMap         *ebpf.Map `ebpf:"accept_args_map"`
 	ActiveSslReadArgsMap  *ebpf.Map `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.Map `ebpf:"active_ssl_write_args_map"`
+	ConnEvtRb             *ebpf.Map `ebpf:"conn_evt_rb"`
+	ConnectArgsMap        *ebpf.Map `ebpf:"connect_args_map"`
 	DataBufferHeap        *ebpf.Map `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.Map `ebpf:"httpevent"`
 	Ipv4RecvBytes         *ebpf.Map `ebpf:"ipv4_recv_bytes"`
@@ -131,8 +164,11 @@ type bpfMaps struct {
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.AcceptArgsMap,
 		m.ActiveSslReadArgsMap,
 		m.ActiveSslWriteArgsMap,
+		m.ConnEvtRb,
+		m.ConnectArgsMap,
 		m.DataBufferHeap,
 		m.Httpevent,
 		m.Ipv4RecvBytes,
@@ -147,22 +183,30 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	KtcpCleanupRbuf   *ebpf.Program `ebpf:"ktcp_cleanup_rbuf"`
-	KtcpSendmsg       *ebpf.Program `ebpf:"ktcp_sendmsg"`
-	SocketHander      *ebpf.Program `ebpf:"socket_hander"`
-	TcEgress          *ebpf.Program `ebpf:"tc_egress"`
-	UprobeSSL_read    *ebpf.Program `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write   *ebpf.Program `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read *ebpf.Program `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite *ebpf.Program `ebpf:"uretprobe_ssl_write"`
+	KprobeSysAccept                  *ebpf.Program `ebpf:"kprobe_sys_accept"`
+	KprobeSysConnect                 *ebpf.Program `ebpf:"kprobe_sys_connect"`
+	KtcpCleanupRbuf                  *ebpf.Program `ebpf:"ktcp_cleanup_rbuf"`
+	KtcpSendmsg                      *ebpf.Program `ebpf:"ktcp_sendmsg"`
+	SocketHander                     *ebpf.Program `ebpf:"socket_hander"`
+	TcEgress                         *ebpf.Program `ebpf:"tc_egress"`
+	TracepointSyscallsSysExitAccept4 *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
+	TracepointSyscallsSysExitConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_connect"`
+	UprobeSSL_read                   *ebpf.Program `ebpf:"uprobe_SSL_read"`
+	UprobeSsL_write                  *ebpf.Program `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read                *ebpf.Program `ebpf:"uretprobe_SSL_read"`
+	UretprobeSslWrite                *ebpf.Program `ebpf:"uretprobe_ssl_write"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
+		p.KprobeSysAccept,
+		p.KprobeSysConnect,
 		p.KtcpCleanupRbuf,
 		p.KtcpSendmsg,
 		p.SocketHander,
 		p.TcEgress,
+		p.TracepointSyscallsSysExitAccept4,
+		p.TracepointSyscallsSysExitConnect,
 		p.UprobeSSL_read,
 		p.UprobeSsL_write,
 		p.UretprobeSSL_read,
@@ -180,5 +224,6 @@ func _BpfClose(closers ...io.Closer) error {
 }
 
 // Do not access this directly.
+//
 //go:embed bpf_bpfel_x86.o
 var _BpfBytes []byte

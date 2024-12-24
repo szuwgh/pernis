@@ -2,7 +2,7 @@ package user
 
 import (
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/szuwgh/villus/common/vlog"
+	"github.com/szuwgh/pernis/common/vlog"
 )
 
 var objs = bpfObjects{}

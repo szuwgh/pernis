@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"github.com/szuwgh/villus/common/vlog"
-	"github.com/szuwgh/villus/user"
+	"github.com/szuwgh/pernis/common/vlog"
+	"github.com/szuwgh/pernis/user"
 )
 
 var Interface string

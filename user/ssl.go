@@ -10,7 +10,7 @@ import (
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
-	"github.com/szuwgh/villus/common/vlog"
+	"github.com/szuwgh/pernis/common/vlog"
 )
 
 type SslDataEventT struct {

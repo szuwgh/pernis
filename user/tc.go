@@ -1,4 +1,3 @@
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -strip llvm-strip-12 -cflags "-O2 -g -Wall -Werror "  -target native  bpf ../bpf/net/net.c -- -I../bpf/headers
 package user
 
 import (
@@ -11,9 +10,9 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/szuwgh/villus/common/bpf"
-	"github.com/szuwgh/villus/common/inet"
-	"github.com/szuwgh/villus/common/vlog"
+	"github.com/szuwgh/pernis/common/bpf"
+	"github.com/szuwgh/pernis/common/inet"
+	"github.com/szuwgh/pernis/common/vlog"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )

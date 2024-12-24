@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	"github.com/szuwgh/villus/common/vlog"
+	"github.com/szuwgh/pernis/common/vlog"
 )
 
 func getFlagString(command *cobra.Command, flag string) string {

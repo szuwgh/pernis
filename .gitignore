@@ -19,6 +19,6 @@
 
 # Go workspace file
 go.work
-villus
-villus.exe
+pernis
+pernis.exe
 *.o

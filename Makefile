@@ -7,7 +7,7 @@ CMD_CLANG := clang
 
 
 GO_SOURCE := main.go
-GO_BINARY := villus
+GO_BINARY := pernis
 
 all: build_go
 

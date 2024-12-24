@@ -5,14 +5,14 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/szuwgh/villus/common/vlog"
-	"github.com/szuwgh/villus/user"
+	"github.com/szuwgh/pernis/common/vlog"
+	"github.com/szuwgh/pernis/user"
 )
 
-const VERSION = "villus version 0.1 linux/amd64"
+const VERSION = "pernis version 0.1 linux/amd64"
 
 var rootCmd = &cobra.Command{
-	Use:   "villus",
+	Use:   "pernis",
 	Short: "go runtime simple monitor based on ebpf",
 	Run: func(cmd *cobra.Command, args []string) {
 
@@ -123,7 +123,7 @@ func tcpcmdFunc(command *cobra.Command, args []string) {
 
 func httpcmdFunc(command *cobra.Command, args []string) {
 	vlog.Println("http")
-	err := user.AttachSocket()
+	err := user.AttachSysConnectKprobe()
 	if err != nil {
 		vlog.Println(err)
 	}

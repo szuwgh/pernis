@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.c": "c",
+        "bpf_tracing.h": "c",
+        "optional": "cpp",
+        "random": "cpp",
+        "stdexcept": "cpp",
+        "functional": "cpp",
+        "type_traits": "cpp",
+        "variant": "cpp",
+        "format": "cpp",
+        "builtins.h": "c"
+    }
+}
