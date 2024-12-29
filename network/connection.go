@@ -16,7 +16,7 @@ func (a *IpAddr) String() string {
 	}
 }
 
-type Connection struct {
-	LocalIp  IpAddr
-	RemoteIp IpAddr
-}
+// type Connection struct {
+// 	LocalIp  IpAddr
+// 	RemoteIp IpAddr
+// }

@@ -9,6 +9,11 @@
         "type_traits": "cpp",
         "variant": "cpp",
         "format": "cpp",
-        "builtins.h": "c"
-    }
+        "builtins.h": "c",
+        "compare": "c",
+        "cstdint": "c"
+    },
+    "go.testFlags": [
+        "-v"
+    ],
 }

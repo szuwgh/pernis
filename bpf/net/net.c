@@ -14,6 +14,7 @@
 #define AF_INET6 3
 #define MAX_DATA_SIZE 4000
 #define MAX_BUF_SIZE 1500
+#define PROTOCOL_VEC_LIMIT 3
 
 #define BPF_READ(src)                                     \
     ({                                                    \
@@ -23,6 +24,20 @@
     })
 
 #define BPF_C_READ(src, a, ...) BPF_CORE_READ(src, a, ##__VA_ARGS__)
+
+#define BPF_U_READ(src, a, ...) BPF_PROBE_READ_USER(src, a, ##__VA_ARGS__)
+
+#define TP_ARGS(dst, idx, ctx)                                                                                       \
+    {                                                                                                                \
+        void *__p = (void *)ctx + sizeof(struct trace_entry) + sizeof(long int) + idx * (sizeof(long unsigned int)); \
+        bpf_probe_read_kernel(dst, sizeof(*dst), __p);                                                               \
+    }
+
+#define TP_RET(dst, ctx)                                                         \
+    {                                                                            \
+        void *__p = (void *)ctx + sizeof(struct trace_entry) + sizeof(long int); \
+        bpf_probe_read_kernel(dst, sizeof(*dst), __p);                           \
+    }
 
 unsigned long long load_word(void *skb,
                              unsigned long long off) asm("llvm.bpf.load.word");
@@ -36,6 +51,7 @@ static const char HTTP[4] = "HTTP";
 const struct so_event *so_event_unused __attribute__((unused));
 const struct upid_t *upid_t_unused __attribute__((unused));
 const struct conn_info_evt *conn_info_evt_unused __attribute__((unused));
+const struct msg_evt_data *msg_evt_data_unused __attribute__((unused));
 
 struct
 {
@@ -54,6 +70,11 @@ static inline int ip_is_fragment(struct __sk_buff *skb, __u32 nhoff)
     bpf_skb_load_bytes(skb, nhoff + offsetof(struct iphdr, frag_off), &frag_off, 2);
     frag_off = __bpf_ntohs(frag_off);
     return frag_off & (IP_MF | IP_OFFSET);
+}
+
+static __inline bool can_trace_conn(struct conn_info *conn)
+{
+    return conn->protocol != ProtocolUnknown;
 }
 
 struct data_key
@@ -384,11 +405,67 @@ struct
 
 struct
 {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct msg_args);
+    __uint(max_entries, 65535);
+    __uint(map_flags, 0);
+} read_args_map SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct msg_args);
+    __uint(max_entries, 65535);
+    __uint(map_flags, 0);
+} write_args_map SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct close_args);
+    __uint(max_entries, 65535);
+    __uint(map_flags, 0);
+} close_args_map SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(key_size, sizeof(uint64_t));
+    __uint(value_size, sizeof(struct conn_info));
+    __uint(max_entries, 65535);
+    __uint(map_flags, 0);
+} conn_info_map SEC(".maps");
+
+struct
+{
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
 } conn_evt_rb SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
+} msg_evt_rb SEC(".maps");
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(struct msg_evt_data));
+    __uint(max_entries, 1);
+    __uint(map_flags, 0);
+} msg_data_map SEC(".maps");
 
 static __always_inline struct tcp_sock *get_socket_from_fd(int fd_num)
 {
+    //  eBPF 提供的一个辅助函数，用于在 eBPF
+    //  程序中获取当前正在运行的内核任务（task_struct）。它返回的是一个指向当前任务的指针
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct files_struct *files = BPF_READ(task->files);
     struct fdtable *fdt = BPF_READ(files->fdt);
@@ -423,6 +500,40 @@ static __always_inline struct tcp_sock *get_socket_from_fd(int fd_num)
     return NULL;
 }
 
+static void __always_inline export_net_msg(void *ctx, uint32_t seq, const char *buf, uint32_t len, uint64_t tgid_fd, enum message_type msg_type)
+{
+    bpf_printk("export_net_msg");
+    size_t _len = len < MAX_MSG_SIZE ? len : MAX_MSG_SIZE;
+    int zero = 0;
+    struct msg_evt_data *data = bpf_map_lookup_elem(&msg_data_map, &zero);
+    if (!data)
+    {
+        bpf_printk("data is null");
+        return;
+    }
+    data->meta.msg_type = msg_type;
+    data->meta.seq = seq;
+    data->meta.tgid_fd = tgid_fd;
+    data->meta.ts = bpf_ktime_get_ns();
+    size_t len_minus_1 = _len - 1;
+    asm volatile("" : "+r"(len_minus_1) :);
+    _len = len_minus_1 + 1;
+    size_t amount_copied = 0;
+    if (len_minus_1 < MAX_MSG_SIZE)
+    {
+        bpf_probe_read(data->msg, _len, buf);
+        amount_copied = _len;
+    }
+    else if (len_minus_1 < 0x7fffffff)
+    {
+        bpf_probe_read(data->msg, MAX_MSG_SIZE, buf);
+        amount_copied = MAX_MSG_SIZE;
+    }
+    data->buf_size = amount_copied;
+    size_t __len = sizeof(struct msg_evt_meta) + sizeof(uint32_t) + amount_copied;
+    bpf_perf_event_output(ctx, &msg_evt_rb, BPF_F_CURRENT_CPU, data, __len);
+}
+
 static void __always_inline parse_sock_key_rcv_sk(struct sock *sk, struct sock_key *key)
 {
     key->dip = BPF_C_READ(sk, __sk_common.skc_daddr);
@@ -432,30 +543,98 @@ static void __always_inline parse_sock_key_rcv_sk(struct sock *sk, struct sock_k
     key->family = BPF_C_READ(sk, __sk_common.skc_family);
 }
 
+static __inline uint64_t gen_tgid_fd(uint32_t tgid, int fd)
+{
+    return ((uint64_t)tgid << 32) | (uint32_t)fd;
+}
+
 static __always_inline void process_syscall_connect(void *ctx, long ret, struct connect_args *args, uint64_t pid_tgid, enum Role role)
 {
     u32 pid = pid_tgid & 0xffffffff; // 低 32 位表示 PID
     u32 tgid = pid_tgid >> 32;       // 高 32 位表示 TGID
 
-    if (args->fd < 0)
+    int ret_fd = args->fd;
+    if (ret_fd < 0)
     {
         return;
     }
 
-    struct conn_info_evt conn = {0};
-    // struct conn_info *conn = &_evt;
-    conn.conn_id.upid.pid = pid;
-    conn.conn_id.upid.tgid = tgid;
-    conn.conn_id.upid.start_time_ticks = args->start_ts;
+    struct conn_info c = {};
+    struct conn_info *info = &c;
+    info->read_bytes = 0;
+    info->write_bytes = 0;
+    info->conn_id.upid.pid = pid;
+    info->conn_id.upid.tgid = tgid;
+    info->conn_id.fd = ret_fd;
+    info->conn_id.upid.start_time_ticks = args->start_ts;
+    info->role = role;
 
     if (args->addr != NULL)
     {
-        bpf_probe_read_user(&conn.daddr, sizeof(union sockaddr_t), args->addr);
+        bpf_probe_read_user(&info->daddr, sizeof(union sockaddr_t), args->addr);
         struct sockaddr_in *addr4 = (struct sockaddr_in *)args->addr;
-        conn.daddr.in4.sin_port = bpf_ntohs(conn.daddr.in4.sin_port);
+        info->daddr.in4.sin_port = bpf_ntohs(info->daddr.in4.sin_port);
         // conn_info.raddr = *((union sockaddr_t*)addr);
     }
-    struct tcp_sock *tcp_sk = get_socket_from_fd(args->fd);
+    struct tcp_sock *tcp_sk = get_socket_from_fd(ret_fd);
+
+    struct sock_key key;
+    parse_sock_key_rcv_sk((struct sock *)tcp_sk, &key);
+
+    bpf_printk("print_sock_key connect port: sport:%d, dport:%d", key.sport, key.dport);
+    bpf_printk("print_sock_key connect addr: saddr:%d, daddr:%d", key.sip, key.dip);
+    bpf_printk("print_sock_key connect family: family:%u", key.family);
+
+    info->saddr.in4.sin_addr.s_addr = role == Client ? key.sip : key.dip;
+    info->saddr.in4.sin_port = role == Client ? key.sport : key.dport;
+    info->daddr.in4.sin_addr.s_addr = role == Client ? key.dip : key.sip;
+    info->daddr.in4.sin_port = role == Client ? key.dport : key.sport;
+    // conn.saddr.in4.sin_family = key.family;
+    // conn.daddr.in4.sin_family = key.family;
+    if (can_trace_conn(info))
+    {
+        uint64_t tgid_fd = gen_tgid_fd(tgid, ret_fd);
+        // 保存连接信息
+        bpf_printk("process_syscall_connect id:%d,tgid:%d,fd:%d", pid_tgid, tgid, ret_fd);
+        info->ctype = Connect;
+        bpf_map_update_elem(&conn_info_map, &tgid_fd, info, BPF_ANY);
+        struct conn_info_evt _evt = {0};
+        struct conn_info_evt *evt = &_evt;
+        evt->info = *info;
+        evt->ts = bpf_ktime_get_ns();
+        bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, evt, sizeof(struct conn_info_evt));
+    }
+}
+
+static __always_inline void process_syscall_accpet(void *ctx, int ret_fd, struct accept_args *args, uint64_t pid_tgid, enum Role role)
+{
+    u32 pid = pid_tgid & 0xffffffff; // 低 32 位表示 PID
+    u32 tgid = pid_tgid >> 32;       // 高 32 位表示 TGID
+
+    // int ret_fd = args->fd;
+    if (ret_fd < 0)
+    {
+        return;
+    }
+
+    struct conn_info c = {};
+    struct conn_info *info = &c;
+    info->read_bytes = 0;
+    info->write_bytes = 0;
+    info->conn_id.upid.pid = pid;
+    info->conn_id.upid.tgid = tgid;
+    info->conn_id.fd = ret_fd;
+    info->conn_id.upid.start_time_ticks = args->start_ts;
+    info->role = role;
+
+    if (args->addr != NULL)
+    {
+        bpf_probe_read_user(&info->daddr, sizeof(union sockaddr_t), args->addr);
+        struct sockaddr_in *addr4 = (struct sockaddr_in *)args->addr;
+        info->daddr.in4.sin_port = bpf_ntohs(info->daddr.in4.sin_port);
+        // conn_info.raddr = *((union sockaddr_t*)addr);
+    }
+    struct tcp_sock *tcp_sk = get_socket_from_fd(ret_fd);
 
     struct sock_key key;
     parse_sock_key_rcv_sk((struct sock *)tcp_sk, &key);
@@ -464,44 +643,85 @@ static __always_inline void process_syscall_connect(void *ctx, long ret, struct 
     bpf_printk("print_sock_key addr: saddr:%d, daddr:%d", key.sip, key.dip);
     bpf_printk("print_sock_key family: family:%u", key.family);
 
-    conn.saddr.in4.sin_addr.s_addr = role == Client ? key.sip : key.dip;
-    conn.saddr.in4.sin_port = role == Client ? key.sport : key.dport;
-    conn.daddr.in4.sin_addr.s_addr = role == Client ? key.dip : key.sip;
-    conn.daddr.in4.sin_port = role == Client ? key.dport : key.sport;
+    info->saddr.in4.sin_addr.s_addr = role == Client ? key.sip : key.dip;
+    info->saddr.in4.sin_port = role == Client ? key.sport : key.dport;
+    info->daddr.in4.sin_addr.s_addr = role == Client ? key.dip : key.sip;
+    info->daddr.in4.sin_port = role == Client ? key.dport : key.sport;
     // conn.saddr.in4.sin_family = key.family;
     // conn.daddr.in4.sin_family = key.family;
-    bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, &conn, sizeof(struct conn_info_evt));
+    if (can_trace_conn(info))
+    {
+        uint64_t tgid_fd = gen_tgid_fd(tgid, ret_fd);
+        // 保存连接信息
+        bpf_printk("process_syscall_accpet id:%d,tgid:%d,fd:%d", pid_tgid, tgid, ret_fd);
+        info->ctype = Connect;
+        bpf_map_update_elem(&conn_info_map, &tgid_fd, info, BPF_ANY);
+        struct conn_info_evt _evt = {0};
+        struct conn_info_evt *evt = &_evt;
+        evt->info = *info;
+        evt->ts = bpf_ktime_get_ns();
+        bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, evt, sizeof(struct conn_info_evt));
+    }
+}
+
+static __always_inline void process_syscall_close(void *ctx, struct close_args *args, uint64_t pid_tgid)
+{
+    if (args->fd < 0)
+    {
+        // bpf_printk("close syscall args->fd:%d,tgid:%u", args->fd, tgid);
+        return;
+    }
+    u32 pid = pid_tgid & 0xffffffff; // 低 32 位表示 PID
+    u32 tgid = pid_tgid >> 32;       // 高 32 位表示 TGID
+    uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+    // 获取连接信息
+    struct conn_info *info = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+    if (info == NULL)
+    {
+        // bpf_printk("close syscall no conn find,tgid:%u,fd:%d",  tgid, args->fd);
+        return;
+    }
+    info->ctype = Close;
+    struct conn_info_evt _evt = {0};
+    struct conn_info_evt *evt = &_evt;
+    evt->info = *info;
+    evt->ts = bpf_ktime_get_ns();
+    bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, evt, sizeof(struct conn_info_evt));
+    bpf_map_delete_elem(&conn_info_map, &tgid_fd);
 }
 
 // int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-SEC("kprobe/__sys_connect")
-int kprobe_sys_connect(struct pt_regs *ctx)
+// SEC("kprobe/__sys_connect")
+// int kprobe_sys_connect(struct pt_regs *ctx)
+// {
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     struct connect_args args = {0};
+//     const int sockfd = (int)PT_REGS_PARM1(ctx);
+//     const struct sockaddr *addr = (struct sockaddr *)PT_REGS_PARM2(ctx);
+//     args.fd = sockfd;
+//     args.addr = addr;
+//     args.start_ts = bpf_ktime_get_ns();
+//     bpf_map_update_elem(&connect_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+
+// int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+SEC("tracepoint/syscalls/sys_enter_connect")
+int tracepoint_syscalls_sys_enter_connect(struct trace_event_raw_sys_enter *ctx)
 {
     uint64_t id = bpf_get_current_pid_tgid();
+
     struct connect_args args = {0};
-    const int sockfd = (int)PT_REGS_PARM1(ctx);
-    const struct sockaddr *addr = (struct sockaddr *)PT_REGS_PARM2(ctx);
-    args.fd = sockfd;
-    args.addr = addr;
+    TP_ARGS(&args.fd, 0, ctx)
+    TP_ARGS(&args.addr, 1, ctx)
     args.start_ts = bpf_ktime_get_ns();
     bpf_map_update_elem(&connect_args_map, &id, &args, BPF_ANY);
     return 0;
 }
 
-// sys/kernel/tracing/events/syscalls/sys_exit_connect/format
-struct trace_event_sys_exit
-{
-    unsigned short common_type;
-    unsigned char common_flags;
-    unsigned char common_preempt_count;
-    int common_pid;
-    int __syscall_nr;
-    long ret;
-};
-
 // /sys/kernel/tracing/events/syscalls/sys_exit_connect/
 SEC("tracepoint/syscalls/sys_exit_connect")
-int tracepoint__syscalls__sys_exit_connect(struct trace_event_sys_exit *ctx)
+int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx)
 {
     uint64_t pid_tgid = bpf_get_current_pid_tgid();
     struct connect_args *args = bpf_map_lookup_elem(&connect_args_map, &pid_tgid);
@@ -513,34 +733,432 @@ int tracepoint__syscalls__sys_exit_connect(struct trace_event_sys_exit *ctx)
     return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_accept4")
+int tracepoint_syscalls_sys_enter_accept4(struct trace_event_raw_sys_enter *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+    struct accept_args args = {0};
+    TP_ARGS(&args.addr, 1, ctx)
+    args.start_ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&accept_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+// /sys/kernel/tracing/events/syscalls/sys_exit_connect/
+SEC("tracepoint/syscalls/sys_exit_accept4")
+int tracepoint__syscalls__sys_exit_accept4(struct trace_event_raw_sys_exit *ctx)
+{
+    uint64_t pid_tgid = bpf_get_current_pid_tgid();
+    struct accept_args *args = bpf_map_lookup_elem(&accept_args_map, &pid_tgid);
+    if (args != NULL)
+    {
+        long int ret;
+        TP_RET(&ret, ctx);
+        process_syscall_accpet(ctx, ret, args, pid_tgid, Server);
+    }
+    bpf_map_delete_elem(&accept_args_map, &pid_tgid);
+    return 0;
+}
+
 // 监听客户端连接请求
 // int __sys_accept4(int fd, struct sockaddr __user *upeer_sockaddr, int __user *upeer_addrlen, int flags)
 SEC("kprobe/__sys_accept4")
 int kprobe_sys_accept(struct pt_regs *ctx)
 {
     uint64_t id = bpf_get_current_pid_tgid();
-    struct connect_args args = {0};
+    struct accept_args args = {0};
     const int sockfd = (int)PT_REGS_PARM1(ctx);
     const struct sockaddr *addr = (struct sockaddr *)PT_REGS_PARM2(ctx);
     args.fd = sockfd;
     args.addr = addr;
     args.start_ts = bpf_ktime_get_ns();
-    bpf_map_update_elem(&connect_args_map, &id, &args, BPF_ANY);
+    bpf_map_update_elem(&accept_args_map, &id, &args, BPF_ANY);
     return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_accept4")
-int tracepoint__syscalls__sys_exit_accept4(struct trace_event_sys_exit *ctx)
+SEC("kretprobe/__sys_accept4")
+int kretprobe_sys_accept(struct pt_regs *ctx)
 {
     uint64_t pid_tgid = bpf_get_current_pid_tgid();
-    struct connect_args *args = bpf_map_lookup_elem(&connect_args_map, &pid_tgid);
+    struct accept_args *args = bpf_map_lookup_elem(&accept_args_map, &pid_tgid);
     if (args != NULL)
     {
-        process_syscall_connect(ctx, ctx->ret, args, pid_tgid, Server);
+        int ret_fd = PT_REGS_RC_CORE(ctx);
+        process_syscall_accpet(ctx, ret_fd, args, pid_tgid, Server);
     }
-    bpf_map_delete_elem(&connect_args_map, &pid_tgid);
+    bpf_map_delete_elem(&accept_args_map, &pid_tgid);
     return 0;
 }
+
+// SEC("kprobe/__sys_recvfrom")
+// int kprobe_sys_recvfrom(struct pt_regs *ctx)
+// {
+//     bpf_printk("__sys_recvfrom");
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     const int sockfd = (int)PT_REGS_PARM1(ctx);
+//     // const struct user_msghdr *msghdr = (struct user_msghdr *)PT_REGS_PARM2(ctx);
+//     struct msg_args args = {0};
+//     args.fd = sockfd;
+//     // args.iov = BPF_U_READ(msghdr, msg_iov);
+//     // args.iovlen = BPF_U_READ(msghdr, msg_iovlen);
+//     bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+
+// // /sys/kernel/debug/tracing/trace
+// SEC("tracepoint/syscalls/sys_exit_recvfrom")
+// int tracepoint_syscalls_sys_exit_recvfrom(struct trace_event_raw_sys_exit *ctx)
+// {
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     ssize_t bytes_count = ctx->ret;
+//     struct msg_args *args = bpf_map_lookup_elem(&read_args_map, &id);
+//     if (args != NULL)
+//     {
+//         // iov（输入 / 输出向量）是一种分散 - 聚集 I / O 操作的数据结构，
+//         // 允许应用程序将数据分成多个缓冲区。
+//         // 每个缓冲区由一个 iov_base（数据地址）和一个 iov_len（数据长度）组成
+//         // 程序通过循环遍历这些缓冲区来读取数据，确保即使数据被分成多个片段，也可以逐一处理。
+//         // 获取数据包的协议
+//         uint32_t tgid = id >> 32;
+//         uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+//         // 获取连接信息
+//         bpf_printk("sys_exit_recvfrom:%d", tgid_fd);
+//         struct conn_info_evt *conn = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+//         if (conn != NULL)
+//         {
+//             struct iovec iov_cpy;
+//             size_t buf_size = 0;
+//             bpf_printk("sys_exit_recvfrom tgid_fd:%d", tgid_fd);
+//         }
+//     }
+//     bpf_map_delete_elem(&read_args_map, &id);
+//     return 0;
+// }
+
+// SEC("kprobe/__x64_sys_read")
+// int kprobe_x64_sys_read(struct pt_regs *ctx)
+// {
+//     // bpf_printk("__x64_sys_read");
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     const u_int32_t sockfd = (u_int32_t)PT_REGS_PARM1(ctx);
+//     // const struct user_msghdr *msghdr = (struct user_msghdr *)PT_REGS_PARM2(ctx);
+//     struct msg_args args = {0};
+//     args.fd = sockfd;
+//     bpf_printk("__x64_sys_read fd:%d", sockfd);
+//     // args.iov = BPF_U_READ(msghdr, msg_iov);
+//     // args.iovlen = BPF_U_READ(msghdr, msg_iovlen);
+//     bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+
+SEC("tracepoint/syscalls/sys_enter_write")
+int tracepoint_syscalls_sys_enter_write(struct trace_event_raw_sys_enter *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+
+    struct msg_args args = {0};
+    TP_ARGS(&args.fd, 0, ctx)
+    TP_ARGS(&args.buf, 1, ctx)
+    args.kernel_fn = kSyscallRead;
+    bpf_map_update_elem(&write_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+// /sys/kernel/debug/tracing/trace
+SEC("tracepoint/syscalls/sys_exit_write")
+int tracepoint_syscalls_sys_exit_write(struct trace_event_raw_sys_exit *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+    ssize_t bytes_count;
+    TP_RET(&bytes_count, ctx);
+    if (bytes_count < 0)
+    {
+        return 0;
+    }
+    struct msg_args *args = bpf_map_lookup_elem(&write_args_map, &id);
+    if (args != NULL)
+    {
+        // iov（输入 / 输出向量）是一种分散 - 聚集 I / O 操作的数据结构，
+        // 允许应用程序将数据分成多个缓冲区。
+        // 每个缓冲区由一个 iov_base（数据地址）和一个 iov_len（数据长度）组成
+        // 程序通过循环遍历这些缓冲区来读取数据，确保即使数据被分成多个片段，也可以逐一处理。
+        // 获取数据包的协议
+        uint32_t tgid = id >> 32;
+        uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+        // 获取连接信息
+
+        struct conn_info *conn = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+        if (conn != NULL)
+        {
+            if (conn->protocol == ProtocolUnset || conn->protocol == ProtocolUnknown)
+            {
+                enum traffic_protocol before_infer = conn->protocol;
+                // 推断协议类型
+                struct protocol_message maybe_protocal = infer_protocol(args->buf, bytes_count);
+                if (before_infer != maybe_protocal.protocol)
+                {
+                    struct conn_info_evt _evt = {0};
+                    struct conn_info_evt *evt = &_evt;
+                    conn->protocol = maybe_protocal.protocol;
+                    conn->msg_type = maybe_protocal.type;
+                    conn->ctype = ProtocolInfer;
+                    evt->info = *conn;
+                    evt->ts = bpf_ktime_get_ns();
+                    bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, evt, sizeof(struct conn_info_evt));
+                }
+            }
+            bpf_printk("sys_exit_write id:%d,tgid:%d,fd:%d", id, tgid, args->fd);
+            enum message_type msg_type = conn->role == Client ? Request : Response;
+            uint64_t seq = (msg_type == Request ? conn->read_bytes : conn->write_bytes) + 1;
+            if (can_trace_conn(conn))
+            {
+                // 发送数据包
+                export_net_msg(ctx, seq, args->buf, bytes_count, tgid_fd, msg_type);
+            }
+            if (msg_type == Request)
+            {
+                conn->read_bytes += bytes_count;
+            }
+            else
+            {
+                conn->write_bytes += bytes_count;
+            }
+        }
+    }
+    bpf_map_delete_elem(&write_args_map, &id);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_read")
+int tracepoint_syscalls_sys_enter_read(struct trace_event_raw_sys_enter *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+
+    struct msg_args args = {0};
+    TP_ARGS(&args.fd, 0, ctx)
+    TP_ARGS(&args.buf, 1, ctx)
+    args.kernel_fn = kSyscallRead;
+    bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+// /sys/kernel/debug/tracing/trace
+SEC("tracepoint/syscalls/sys_exit_read")
+int tracepoint_syscalls_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
+{
+    // 用于获取当前执行上下文的进程和线程信息。这个函数返回一个 64 位的值，其中包含了当前的进程 ID 和线程组 ID（PID 和 TGID）。
+    uint64_t id = bpf_get_current_pid_tgid();
+    ssize_t bytes_count;
+    TP_RET(&bytes_count, ctx);
+    if (bytes_count < 0)
+    {
+        return 0;
+    }
+    struct msg_args *args = bpf_map_lookup_elem(&read_args_map, &id);
+    if (args != NULL)
+    {
+        // iov（输入 / 输出向量）是一种分散 - 聚集 I / O 操作的数据结构，
+        // 允许应用程序将数据分成多个缓冲区。
+        // 每个缓冲区由一个 iov_base（数据地址）和一个 iov_len（数据长度）组成
+        // 程序通过循环遍历这些缓冲区来读取数据，确保即使数据被分成多个片段，也可以逐一处理。
+        // 获取数据包的协议
+        uint32_t tgid = id >> 32;
+        uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+        // 获取连接信息
+        struct conn_info *conn = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+        if (conn != NULL)
+        {
+            // 如果协议未知，则推断协议类型
+            if (conn->protocol == ProtocolUnset || conn->protocol == ProtocolUnknown)
+            {
+                enum traffic_protocol before_infer = conn->protocol;
+                // 推断协议类型
+                struct protocol_message maybe_protocal = infer_protocol(args->buf, bytes_count);
+                if (before_infer != maybe_protocal.protocol)
+                {
+                    struct conn_info_evt _evt = {0};
+                    struct conn_info_evt *evt = &_evt;
+                    conn->protocol = maybe_protocal.protocol;
+                    conn->msg_type = maybe_protocal.type;
+                    conn->ctype = ProtocolInfer;
+                    evt->info = *conn;
+                    evt->ts = bpf_ktime_get_ns();
+                    bpf_perf_event_output(ctx, &conn_evt_rb, BPF_F_CURRENT_CPU, evt, sizeof(struct conn_info_evt));
+                }
+            }
+            // 获取数据包的协议
+            enum message_type msg_type = conn->role == Client ? Response : Request;
+            uint64_t seq = (msg_type == Request ? conn->read_bytes : conn->write_bytes) + 1;
+            if (can_trace_conn(conn))
+            {
+                // 发送数据包
+                export_net_msg(ctx, seq, args->buf, bytes_count, tgid_fd, msg_type);
+            }
+            // 更新连接信息
+            if (msg_type == Request)
+            {
+                conn->read_bytes = conn->read_bytes + bytes_count;
+            }
+            else
+            {
+                conn->write_bytes = conn->write_bytes + bytes_count;
+            }
+            // bpf_printk("read_bytes2 %d", conn->read_bytes);
+            // bpf_printk("write_bytes2 %d", conn->write_bytes);
+            // bpf_map_update_elem(&conn_info_map, &tgid_fd, conn, BPF_ANY);
+        }
+    }
+    bpf_map_delete_elem(&read_args_map, &id);
+    return 0;
+}
+
+// int close(int fd);
+SEC("tracepoint/syscalls/sys_enter_close")
+int tracepoint_syscalls_sys_enter_close(struct trace_event_raw_sys_enter *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+    struct close_args args = {0};
+    TP_ARGS(&args.fd, 0, ctx)
+    bpf_map_update_elem(&close_args_map, &id, &args, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_close")
+int tracepoint_syscalls_sys_exit_close(struct trace_event_raw_sys_exit *ctx)
+{
+    uint64_t id = bpf_get_current_pid_tgid();
+    struct close_args *args = bpf_map_lookup_elem(&close_args_map, &id);
+    if (args != NULL)
+    {
+        long int ret;
+        TP_RET(&ret, ctx);
+        process_syscall_close(ctx, args, id);
+    }
+    bpf_map_delete_elem(&close_args_map, &id);
+    return 0;
+}
+
+// SEC("kprobe/__sys_recvmsg")
+// int kprobe_sys_recvmsg(struct pt_regs *ctx)
+// {
+//     bpf_printk("__sys_recvmsg");
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     const int sockfd = (int)PT_REGS_PARM1(ctx);
+//     const struct user_msghdr *msghdr = (struct user_msghdr *)PT_REGS_PARM2(ctx);
+//     struct msg_args args = {0};
+//     args.fd = sockfd;
+//     args.iov = BPF_U_READ(msghdr, msg_iov);
+//     args.iovlen = BPF_U_READ(msghdr, msg_iovlen);
+//     bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+
+// SEC("kprobe/__x64_sys_recvmsg")
+// int kprobe_sys_x64_recvmsg(struct pt_regs *ctx)
+// {
+//     bpf_printk("__x64_sys_recvmsg");
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     const int sockfd = (int)PT_REGS_PARM1(ctx);
+//     const struct user_msghdr *msghdr = (struct user_msghdr *)PT_REGS_PARM2(ctx);
+//     struct msg_args args = {0};
+//     args.fd = sockfd;
+//     args.iov = BPF_U_READ(msghdr, msg_iov);
+//     args.iovlen = BPF_U_READ(msghdr, msg_iovlen);
+//     bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+// // /sys/kernel/debug/tracing/trace
+// SEC("tracepoint/syscalls/sys_exit_recvmsg")
+// int tracepoint_syscalls_sys_exit_recvmsg(struct trace_event_raw_sys_exit *ctx)
+// {
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     ssize_t bytes_count = ctx->ret;
+//     bpf_printk("tracepoint_syscalls_sys_recvmsg2");
+//     struct msg_args *args = bpf_map_lookup_elem(&read_args_map, &id);
+//     if (args != NULL)
+//     {
+//         // iov（输入 / 输出向量）是一种分散 - 聚集 I / O 操作的数据结构，
+//         // 允许应用程序将数据分成多个缓冲区。
+//         // 每个缓冲区由一个 iov_base（数据地址）和一个 iov_len（数据长度）组成
+//         // 程序通过循环遍历这些缓冲区来读取数据，确保即使数据被分成多个片段，也可以逐一处理。
+//         // 获取数据包的协议
+//         uint32_t tgid = id >> 32;
+//         uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+//         // 获取连接信息
+//         bpf_printk("tracepoint_syscalls_sys_recvmsg tgid_fd:%d", tgid_fd);
+//         struct conn_info_evt *conn = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+//         if (conn != NULL)
+//         {
+//             struct iovec iov_cpy;
+//             size_t buf_size = 0;
+//             bpf_printk("tracepoint_syscalls_sys_exit_recvmsg");
+//         }
+//     }
+//     bpf_map_delete_elem(&read_args_map, &id);
+//     return 0;
+// }
+
+// SEC("kprobe/do_readv")
+// int kprobe_do_readv(struct pt_regs *ctx)
+// {
+//     bpf_printk("kprobe_do_readv");
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     const int sockfd = (int)PT_REGS_PARM1(ctx);
+//     struct msg_args args = {0};
+//     args.fd = sockfd;
+//     bpf_map_update_elem(&read_args_map, &id, &args, BPF_ANY);
+//     return 0;
+// }
+
+// SEC("kretprobe/do_readv")
+// int kretprobe_do_readv(struct pt_regs *ctx)
+// {
+//     uint64_t id = bpf_get_current_pid_tgid();
+//     ssize_t bytes_count = PT_REGS_RC_CORE(ctx);
+//     struct msg_args *args = bpf_map_lookup_elem(&read_args_map, &id);
+//     if (args != NULL)
+//     {
+//         uint32_t tgid = id >> 32;
+//         uint64_t tgid_fd = gen_tgid_fd(tgid, args->fd);
+//         // 获取连接信息
+//         bpf_printk("do_readv tgid_fd:%d", tgid_fd);
+//         struct conn_info_evt *conn = bpf_map_lookup_elem(&conn_info_map, &tgid_fd);
+//         if (conn != NULL)
+//         {
+//             struct iovec iov_cpy;
+//             size_t buf_size = 0;
+//             bpf_printk("do_readv tgid_fd:%d", tgid_fd);
+//         }
+//     }
+//     bpf_map_delete_elem(&read_args_map, &id);
+//     return 0;
+// }
+
+// SEC("tracepoint/syscalls/sys_exit_accept4")
+// int tracepoint__syscalls__sys_exit_accept4(struct trace_event_sys_exit *ctx)
+// {
+//     uint64_t pid_tgid = bpf_get_current_pid_tgid();
+//     struct connect_args *args = bpf_map_lookup_elem(&connect_args_map, &pid_tgid);
+//     if (args != NULL)
+//     {
+//         process_syscall_connect(ctx, ctx->ret, args, pid_tgid, Server);
+//     }
+//     bpf_map_delete_elem(&connect_args_map, &pid_tgid);
+//     return 0;
+// }
+
+// SEC("tracepoint/syscalls/sys_exit_accept4")
+// int tracepoint__syscalls__sys_exit_accept4(struct trace_event_sys_exit *ctx)
+// {
+//     uint64_t pid_tgid = bpf_get_current_pid_tgid();
+//     struct connect_args *args = bpf_map_lookup_elem(&connect_args_map, &pid_tgid);
+//     if (args != NULL)
+//     {
+//         process_syscall_connect(ctx, ctx->ret, args, pid_tgid, Server);
+//     }
+//     bpf_map_delete_elem(&connect_args_map, &pid_tgid);
+//     return 0;
+// }
 
 /***********************************************************
  * 统计相关

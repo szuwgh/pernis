@@ -14,32 +14,51 @@ import (
 )
 
 type bpfConnInfoEvt struct {
-	ConnId struct {
-		Upid bpfUpidT
-		Fd   int32
-		_    [4]byte
-		Tsid uint64
-	}
-	Saddr struct {
-		In4 struct {
-			SinFamily uint16
-			SinPort   uint16
-			SinAddr   struct{ S_addr uint32 }
-			Pad       [8]uint8
+	Info struct {
+		ReadBytes  uint32
+		WriteBytes uint32
+		ConnId     struct {
+			Upid bpfUpidT
+			Fd   int32
+			_    [4]byte
+			Tsid uint64
 		}
-		_ [12]byte
-	}
-	Daddr struct {
-		In4 struct {
-			SinFamily uint16
-			SinPort   uint16
-			SinAddr   struct{ S_addr uint32 }
-			Pad       [8]uint8
+		Saddr struct {
+			In4 struct {
+				SinFamily uint16
+				SinPort   uint16
+				SinAddr   struct{ S_addr uint32 }
+				Pad       [8]uint8
+			}
+			_ [12]byte
 		}
-		_ [12]byte
+		Daddr struct {
+			In4 struct {
+				SinFamily uint16
+				SinPort   uint16
+				SinAddr   struct{ S_addr uint32 }
+				Pad       [8]uint8
+			}
+			_ [12]byte
+		}
+		Protocol int32
+		MsgType  int32
+		Ctype    int32
+		Role     int32
 	}
-	Protocol int32
-	_        [4]byte
+	Ts uint64
+}
+
+type bpfMsgEvtData struct {
+	Meta struct {
+		TgidFd  uint64
+		Ts      uint64
+		Seq     uint32
+		MsgType int32
+	}
+	BufSize uint32
+	Msg     [30720]int8
+	_       [4]byte
 }
 
 type bpfSoEvent struct {
@@ -97,18 +116,26 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	KprobeSysAccept                  *ebpf.ProgramSpec `ebpf:"kprobe_sys_accept"`
-	KprobeSysConnect                 *ebpf.ProgramSpec `ebpf:"kprobe_sys_connect"`
-	KtcpCleanupRbuf                  *ebpf.ProgramSpec `ebpf:"ktcp_cleanup_rbuf"`
-	KtcpSendmsg                      *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
-	SocketHander                     *ebpf.ProgramSpec `ebpf:"socket_hander"`
-	TcEgress                         *ebpf.ProgramSpec `ebpf:"tc_egress"`
-	TracepointSyscallsSysExitAccept4 *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
-	TracepointSyscallsSysExitConnect *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_connect"`
-	UprobeSSL_read                   *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write                  *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read                *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite                *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
+	KprobeSysAccept                   *ebpf.ProgramSpec `ebpf:"kprobe_sys_accept"`
+	KretprobeSysAccept                *ebpf.ProgramSpec `ebpf:"kretprobe_sys_accept"`
+	KtcpCleanupRbuf                   *ebpf.ProgramSpec `ebpf:"ktcp_cleanup_rbuf"`
+	KtcpSendmsg                       *ebpf.ProgramSpec `ebpf:"ktcp_sendmsg"`
+	SocketHander                      *ebpf.ProgramSpec `ebpf:"socket_hander"`
+	TcEgress                          *ebpf.ProgramSpec `ebpf:"tc_egress"`
+	TracepointSyscallsSysExitAccept4  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
+	TracepointSyscallsSysExitConnect  *ebpf.ProgramSpec `ebpf:"tracepoint__syscalls__sys_exit_connect"`
+	TracepointSyscallsSysEnterAccept4 *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_accept4"`
+	TracepointSyscallsSysEnterClose   *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_close"`
+	TracepointSyscallsSysEnterConnect *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_connect"`
+	TracepointSyscallsSysEnterRead    *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_read"`
+	TracepointSyscallsSysEnterWrite   *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_enter_write"`
+	TracepointSyscallsSysExitClose    *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_close"`
+	TracepointSyscallsSysExitRead     *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_read"`
+	TracepointSyscallsSysExitWrite    *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_write"`
+	UprobeSSL_read                    *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
+	UprobeSsL_write                   *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read                 *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
+	UretprobeSslWrite                 *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -118,15 +145,21 @@ type bpfMapSpecs struct {
 	AcceptArgsMap         *ebpf.MapSpec `ebpf:"accept_args_map"`
 	ActiveSslReadArgsMap  *ebpf.MapSpec `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.MapSpec `ebpf:"active_ssl_write_args_map"`
+	CloseArgsMap          *ebpf.MapSpec `ebpf:"close_args_map"`
 	ConnEvtRb             *ebpf.MapSpec `ebpf:"conn_evt_rb"`
+	ConnInfoMap           *ebpf.MapSpec `ebpf:"conn_info_map"`
 	ConnectArgsMap        *ebpf.MapSpec `ebpf:"connect_args_map"`
 	DataBufferHeap        *ebpf.MapSpec `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.MapSpec `ebpf:"httpevent"`
 	Ipv4RecvBytes         *ebpf.MapSpec `ebpf:"ipv4_recv_bytes"`
 	Ipv4SendBytes         *ebpf.MapSpec `ebpf:"ipv4_send_bytes"`
+	MsgDataMap            *ebpf.MapSpec `ebpf:"msg_data_map"`
+	MsgEvtRb              *ebpf.MapSpec `ebpf:"msg_evt_rb"`
 	ProcHttpSession       *ebpf.MapSpec `ebpf:"proc_http_session"`
+	ReadArgsMap           *ebpf.MapSpec `ebpf:"read_args_map"`
 	TcDaddrMap            *ebpf.MapSpec `ebpf:"tc_daddr_map"`
 	TlsEvents             *ebpf.MapSpec `ebpf:"tls_events"`
+	WriteArgsMap          *ebpf.MapSpec `ebpf:"write_args_map"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -151,15 +184,21 @@ type bpfMaps struct {
 	AcceptArgsMap         *ebpf.Map `ebpf:"accept_args_map"`
 	ActiveSslReadArgsMap  *ebpf.Map `ebpf:"active_ssl_read_args_map"`
 	ActiveSslWriteArgsMap *ebpf.Map `ebpf:"active_ssl_write_args_map"`
+	CloseArgsMap          *ebpf.Map `ebpf:"close_args_map"`
 	ConnEvtRb             *ebpf.Map `ebpf:"conn_evt_rb"`
+	ConnInfoMap           *ebpf.Map `ebpf:"conn_info_map"`
 	ConnectArgsMap        *ebpf.Map `ebpf:"connect_args_map"`
 	DataBufferHeap        *ebpf.Map `ebpf:"data_buffer_heap"`
 	Httpevent             *ebpf.Map `ebpf:"httpevent"`
 	Ipv4RecvBytes         *ebpf.Map `ebpf:"ipv4_recv_bytes"`
 	Ipv4SendBytes         *ebpf.Map `ebpf:"ipv4_send_bytes"`
+	MsgDataMap            *ebpf.Map `ebpf:"msg_data_map"`
+	MsgEvtRb              *ebpf.Map `ebpf:"msg_evt_rb"`
 	ProcHttpSession       *ebpf.Map `ebpf:"proc_http_session"`
+	ReadArgsMap           *ebpf.Map `ebpf:"read_args_map"`
 	TcDaddrMap            *ebpf.Map `ebpf:"tc_daddr_map"`
 	TlsEvents             *ebpf.Map `ebpf:"tls_events"`
+	WriteArgsMap          *ebpf.Map `ebpf:"write_args_map"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -167,15 +206,21 @@ func (m *bpfMaps) Close() error {
 		m.AcceptArgsMap,
 		m.ActiveSslReadArgsMap,
 		m.ActiveSslWriteArgsMap,
+		m.CloseArgsMap,
 		m.ConnEvtRb,
+		m.ConnInfoMap,
 		m.ConnectArgsMap,
 		m.DataBufferHeap,
 		m.Httpevent,
 		m.Ipv4RecvBytes,
 		m.Ipv4SendBytes,
+		m.MsgDataMap,
+		m.MsgEvtRb,
 		m.ProcHttpSession,
+		m.ReadArgsMap,
 		m.TcDaddrMap,
 		m.TlsEvents,
+		m.WriteArgsMap,
 	)
 }
 
@@ -183,30 +228,46 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	KprobeSysAccept                  *ebpf.Program `ebpf:"kprobe_sys_accept"`
-	KprobeSysConnect                 *ebpf.Program `ebpf:"kprobe_sys_connect"`
-	KtcpCleanupRbuf                  *ebpf.Program `ebpf:"ktcp_cleanup_rbuf"`
-	KtcpSendmsg                      *ebpf.Program `ebpf:"ktcp_sendmsg"`
-	SocketHander                     *ebpf.Program `ebpf:"socket_hander"`
-	TcEgress                         *ebpf.Program `ebpf:"tc_egress"`
-	TracepointSyscallsSysExitAccept4 *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
-	TracepointSyscallsSysExitConnect *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_connect"`
-	UprobeSSL_read                   *ebpf.Program `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write                  *ebpf.Program `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read                *ebpf.Program `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite                *ebpf.Program `ebpf:"uretprobe_ssl_write"`
+	KprobeSysAccept                   *ebpf.Program `ebpf:"kprobe_sys_accept"`
+	KretprobeSysAccept                *ebpf.Program `ebpf:"kretprobe_sys_accept"`
+	KtcpCleanupRbuf                   *ebpf.Program `ebpf:"ktcp_cleanup_rbuf"`
+	KtcpSendmsg                       *ebpf.Program `ebpf:"ktcp_sendmsg"`
+	SocketHander                      *ebpf.Program `ebpf:"socket_hander"`
+	TcEgress                          *ebpf.Program `ebpf:"tc_egress"`
+	TracepointSyscallsSysExitAccept4  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_accept4"`
+	TracepointSyscallsSysExitConnect  *ebpf.Program `ebpf:"tracepoint__syscalls__sys_exit_connect"`
+	TracepointSyscallsSysEnterAccept4 *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_accept4"`
+	TracepointSyscallsSysEnterClose   *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_close"`
+	TracepointSyscallsSysEnterConnect *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_connect"`
+	TracepointSyscallsSysEnterRead    *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_read"`
+	TracepointSyscallsSysEnterWrite   *ebpf.Program `ebpf:"tracepoint_syscalls_sys_enter_write"`
+	TracepointSyscallsSysExitClose    *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_close"`
+	TracepointSyscallsSysExitRead     *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_read"`
+	TracepointSyscallsSysExitWrite    *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_write"`
+	UprobeSSL_read                    *ebpf.Program `ebpf:"uprobe_SSL_read"`
+	UprobeSsL_write                   *ebpf.Program `ebpf:"uprobe_ssL_write"`
+	UretprobeSSL_read                 *ebpf.Program `ebpf:"uretprobe_SSL_read"`
+	UretprobeSslWrite                 *ebpf.Program `ebpf:"uretprobe_ssl_write"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
 		p.KprobeSysAccept,
-		p.KprobeSysConnect,
+		p.KretprobeSysAccept,
 		p.KtcpCleanupRbuf,
 		p.KtcpSendmsg,
 		p.SocketHander,
 		p.TcEgress,
 		p.TracepointSyscallsSysExitAccept4,
 		p.TracepointSyscallsSysExitConnect,
+		p.TracepointSyscallsSysEnterAccept4,
+		p.TracepointSyscallsSysEnterClose,
+		p.TracepointSyscallsSysEnterConnect,
+		p.TracepointSyscallsSysEnterRead,
+		p.TracepointSyscallsSysEnterWrite,
+		p.TracepointSyscallsSysExitClose,
+		p.TracepointSyscallsSysExitRead,
+		p.TracepointSyscallsSysExitWrite,
 		p.UprobeSSL_read,
 		p.UprobeSsL_write,
 		p.UretprobeSSL_read,
