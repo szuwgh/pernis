@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -16,11 +16,13 @@ import (
 	"github.com/cilium/ebpf/perf"
 
 	//"github.com/cilium/ebpf/ringbuf"
-	"github.com/szuwgh/pernis/common/byteorder"
+	//"github.com/szuwgh/pernis/common/byteorder"
 	"github.com/szuwgh/pernis/common/vlog"
 	"github.com/szuwgh/pernis/network"
 	"golang.org/x/sys/unix"
-	//"time"
+
+	//"slices"
+	"time"
 	//"reflect"
 	//"unsafe"
 )
@@ -41,12 +43,18 @@ const (
 type Connection struct {
 	LocalIp    network.IpAddr
 	RemoteIp   network.IpAddr
+	LocalPort  network.Port
+	RemotePort network.Port
 	Protocol   int32
 	reqStream  *network.StreamBuffer
 	respStream *network.StreamBuffer
 	requests   []*network.GrabHttpRequest
 	response   []*network.GrabHttpResponse
-	prevConn   []*Connection // 具有相同的文件描述符 sockfd
+	tempMsgEvt []*bpfMsgEvtData
+	connTime   uint64
+	closeTime  uint64
+	isClose    bool
+	chainConn  []*Connection // 具有相同的文件描述符 sockfd
 }
 
 func (c *Connection) protocol() string {
@@ -61,6 +69,15 @@ func (c *Connection) protocol() string {
 		return "http2"
 	}
 	return "unknown"
+}
+
+func (c *Connection) uniqueIdent() string {
+	return fmt.Sprintf("%d%d%d%d", c.LocalIp.Ip(), c.LocalPort, c.RemoteIp.Ip(), c.RemotePort)
+}
+
+// 是否是相同的连接
+func (c *Connection) IsSameConn(o *Connection) bool {
+	return c.LocalIp.Ip() == o.LocalIp.Ip() && c.RemoteIp.Ip() == o.RemoteIp.Ip() && c.RemotePort == o.RemotePort && c.LocalPort == o.LocalPort
 }
 
 func (c *Connection) match() []record {
@@ -107,9 +124,9 @@ type SoEvent struct {
 }
 
 func AttachSysConnectKprobe() (err error) {
-
-	pes := NewPernis()
-
+	p := newProcess()
+	p.run()
+	var objs = bpfObjects{}
 	if err := loadBpfObjects(&objs, nil); err != nil {
 		vlog.Fatalf("loading objects: %v", err)
 	}
@@ -121,29 +138,29 @@ func AttachSysConnectKprobe() (err error) {
 	// }
 	// defer kp.Close()
 
-	tpc1, err := link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSyscallsSysEnterConnect, nil)
-	if err != nil {
-		vlog.Fatalf("opening tracepoint: %s", err)
-	}
-	defer tpc1.Close()
-
-	tpc, err := link.Tracepoint("syscalls", "sys_exit_connect", objs.TracepointSyscallsSysExitConnect, nil)
-	if err != nil {
-		vlog.Fatalf("opening tracepoint: %s", err)
-	}
-	defer tpc.Close()
-
-	// tpc1, err := link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSyscallsSysEnterAccept4, nil)
+	// tpc1, err := link.Tracepoint("syscalls", "sys_enter_connect", objs.TracepointSyscallsSysEnterConnect, nil)
 	// if err != nil {
 	// 	vlog.Fatalf("opening tracepoint: %s", err)
 	// }
 	// defer tpc1.Close()
 
-	// tpc, err := link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSyscallsSysExitAccept4, nil)
+	// tpc, err := link.Tracepoint("syscalls", "sys_exit_connect", objs.TracepointSyscallsSysExitConnect, nil)
 	// if err != nil {
 	// 	vlog.Fatalf("opening tracepoint: %s", err)
 	// }
 	// defer tpc.Close()
+
+	tpc1, err := link.Tracepoint("syscalls", "sys_enter_accept4", objs.TracepointSyscallsSysEnterAccept4, nil)
+	if err != nil {
+		vlog.Fatalf("opening tracepoint: %s", err)
+	}
+	defer tpc1.Close()
+
+	tpc, err := link.Tracepoint("syscalls", "sys_exit_accept4", objs.TracepointSyscallsSysExitAccept4, nil)
+	if err != nil {
+		vlog.Fatalf("opening tracepoint: %s", err)
+	}
+	defer tpc.Close()
 
 	tp1, err := link.Tracepoint("syscalls", "sys_enter_read", objs.TracepointSyscallsSysEnterRead, nil)
 	if err != nil {
@@ -203,31 +220,7 @@ func AttachSysConnectKprobe() (err error) {
 			if err != nil {
 				continue
 			}
-			tgidFd := uint64(event.Info.ConnId.Upid.Tgid)<<32 | uint64(event.Info.ConnId.Fd)
-			switch event.Info.Ctype {
-			case ConnTypeConnect:
-				conn := &Connection{
-					LocalIp:    byteorder.IntToBytes(event.Info.Saddr.In4.SinAddr.S_addr),
-					RemoteIp:   byteorder.IntToBytes(event.Info.Daddr.In4.SinAddr.S_addr),
-					reqStream:  &network.StreamBuffer{},
-					respStream: &network.StreamBuffer{},
-				}
-				//	vlog.Println(conn.LocalIp.String(), conn.RemoteIp.String(), conn.protocol())
-				pes.AddConn(tgidFd, conn)
-			case ConnTypeClose:
-				//fmt.Println("close", tgidFd)
-				// go func() {
-				// 	time.Sleep(1 * time.Second)
-				// 	pes.DelConn(tgidFd)
-				// }()
-			case ConnTypProtocolInfer:
-				conn := pes.GetConn(tgidFd)
-				if conn != nil {
-					conn.Protocol = event.Info.Protocol
-					//	vlog.Println(conn.LocalIp.String(), conn.RemoteIp.String(), conn.protocol())
-				}
-			}
-
+			p.connEvt <- &event
 		}
 	}()
 	msgEvtReader, err := perf.NewReader(objs.MsgEvtRb, os.Getpagesize()) //ringbuf.NewReader(objs.ConnEvtRb)
@@ -264,31 +257,7 @@ func AttachSysConnectKprobe() (err error) {
 				vlog.Println(err)
 				continue
 			}
-			tgidFd := evtData.Meta.TgidFd
-			conn := pes.GetConn(tgidFd)
-			if conn == nil {
-				continue
-			}
-			if conn.protocol() != "http" {
-				continue
-			}
-			if len(evtData.Msg[:evtData.BufSize]) == 0 {
-				continue
-			}
-			if evtData.Meta.MsgType == 1 { //请求
-				conn.reqStream.Add(evtData.Meta.Ts, evtData.Meta.Seq, int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
-			} else if evtData.Meta.MsgType == 2 { //响应
-				conn.respStream.Add(evtData.Meta.Ts, evtData.Meta.Seq, int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
-			}
-			parser := network.HttpParser{}
-			requests := parser.ParseRequest(conn.reqStream)
-			response := parser.ParseResponse(conn.respStream)
-			conn.requests = append(conn.requests, requests...)
-			conn.response = append(conn.response, response...)
-			records := conn.match()
-			for _, rec := range records {
-				fmt.Println(rec.req.URI, string(rec.resp.Body))
-			}
+			p.msgEvt <- &evtData
 		}
 	}()
 	select {}
@@ -305,79 +274,79 @@ func int8ArrayToByteNoCopy(msg []int8) []byte {
 	return byteSlice
 }
 
-func AttachSocket() error {
-	stopper := make(chan os.Signal, 1)
-	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		vlog.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
+// func AttachSocket() error {
+// 	stopper := make(chan os.Signal, 1)
+// 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
+// 	if err := loadBpfObjects(&objs, nil); err != nil {
+// 		vlog.Fatalf("loading objects: %v", err)
+// 	}
+// 	defer objs.Close()
 
-	sockFD, err := attachSocketFilter(ETH0, objs.bpfPrograms.SocketHander.FD())
-	if err != nil {
-		vlog.Fatalf("attach socket filter: %v", err)
-	}
+// 	sockFD, err := attachSocketFilter(ETH0, objs.bpfPrograms.SocketHander.FD())
+// 	if err != nil {
+// 		vlog.Fatalf("attach socket filter: %v", err)
+// 	}
 
-	defer syscall.Close(sockFD)
-	// ticker := time.NewTicker(2 * time.Second)
-	// defer ticker.Stop()
-	// rd, err := ringbuf.NewReader(objs.Httpevent)
-	// if err != nil {
-	// 	vlog.Fatalf("opening ringbuf reader: %s", err)
-	// }
-	//defer rd.Close()
-	go func() {
-		<-stopper
-		vlog.Println("Received signal, exiting program..")
-		if err := detach(sockFD); err != nil {
-			vlog.Fatal(err)
-		}
-		os.Exit(0)
-	}()
+// 	defer syscall.Close(sockFD)
+// 	// ticker := time.NewTicker(2 * time.Second)
+// 	// defer ticker.Stop()
+// 	// rd, err := ringbuf.NewReader(objs.Httpevent)
+// 	// if err != nil {
+// 	// 	vlog.Fatalf("opening ringbuf reader: %s", err)
+// 	// }
+// 	//defer rd.Close()
+// 	go func() {
+// 		<-stopper
+// 		vlog.Println("Received signal, exiting program..")
+// 		if err := detach(sockFD); err != nil {
+// 			vlog.Fatal(err)
+// 		}
+// 		os.Exit(0)
+// 	}()
 
-	//vlog.Println("Waiting for events..")
+// 	//vlog.Println("Waiting for events..")
 
-	// bpfEvent is generated by bpf2go.
+// 	// bpfEvent is generated by bpf2go.
 
-	rd, err := perf.NewReader(objs.Httpevent, os.Getpagesize())
-	if err != nil {
-		vlog.Fatalf("creating perf event reader: %s", err)
-	}
-	defer rd.Close()
-	go func() {
-		<-stopper
-		vlog.Println("Received signal, exiting program..")
-		if err := rd.Close(); err != nil {
-			vlog.Fatalf("closing perf event reader: %s", err)
-		}
-	}()
-	vlog.Println("Tracing... Hit Ctrl-C to end.")
-	//vlog.Printf("   %-12s  %-s\n", "EVENT", "TIME(ns)")
-	var event SoEvent
+// 	rd, err := perf.NewReader(objs.Httpevent, os.Getpagesize())
+// 	if err != nil {
+// 		vlog.Fatalf("creating perf event reader: %s", err)
+// 	}
+// 	defer rd.Close()
+// 	go func() {
+// 		<-stopper
+// 		vlog.Println("Received signal, exiting program..")
+// 		if err := rd.Close(); err != nil {
+// 			vlog.Fatalf("closing perf event reader: %s", err)
+// 		}
+// 	}()
+// 	vlog.Println("Tracing... Hit Ctrl-C to end.")
+// 	//vlog.Printf("   %-12s  %-s\n", "EVENT", "TIME(ns)")
+// 	var event SoEvent
 
-	for {
-		record, err := rd.Read()
-		if err != nil {
-			if errors.Is(err, perf.ErrClosed) {
-				return err
-			}
-			vlog.Printf("reading from perf event reader: %s", err)
-			continue
-		}
-		if record.LostSamples != 0 {
-			vlog.Printf("perf event ring buffer full, dropped %d samples", record.LostSamples)
-			continue
-		}
+// 	for {
+// 		record, err := rd.Read()
+// 		if err != nil {
+// 			if errors.Is(err, perf.ErrClosed) {
+// 				return err
+// 			}
+// 			vlog.Printf("reading from perf event reader: %s", err)
+// 			continue
+// 		}
+// 		if record.LostSamples != 0 {
+// 			vlog.Printf("perf event ring buffer full, dropped %d samples", record.LostSamples)
+// 			continue
+// 		}
 
-		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
-			vlog.Printf("parsing perf event: %s", err)
-			continue
-		}
-		vlog.Printf("saddr:%s:%d -> addr: %s:%d \n", intToIP(event.SrcAddr), event.SrcPort, intToIP(event.DstAddr), event.DstPort)
-		vlog.Printf("%s\n", record.RawSample[54+16:])
+// 		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event); err != nil {
+// 			vlog.Printf("parsing perf event: %s", err)
+// 			continue
+// 		}
+// 		vlog.Printf("saddr:%s:%d -> addr: %s:%d \n", intToIP(event.SrcAddr), event.SrcPort, intToIP(event.DstAddr), event.DstPort)
+// 		vlog.Printf("%s\n", record.RawSample[54+16:])
 
-	}
-}
+// 	}
+// }
 
 func detach(sockFD int) error {
 	err := unix.SetsockoptInt(sockFD, unix.SOL_SOCKET, SO_DETACH_FILTER, 0)
@@ -418,6 +387,122 @@ func attachSocketFilter(deviceName string, ebpfProgFD int) (int, error) {
 	// 	return -1, err
 	// }
 	return sockFD, nil
+}
+
+type Process struct {
+	connEvt chan *bpfConnInfoEvt
+	msgEvt  chan *bpfMsgEvtData
+	pes     *pernis
+}
+
+func newProcess() *Process {
+	p := &Process{
+		connEvt: make(chan *bpfConnInfoEvt),
+		msgEvt:  make(chan *bpfMsgEvtData),
+		pes:     NewPernis(),
+	}
+	return p
+}
+
+func (p *Process) run() {
+	go func() {
+		for {
+			select {
+			case event := <-p.connEvt:
+				tgidFd := uint64(event.Info.ConnId.Upid.Tgid)<<32 | uint64(event.Info.ConnId.Fd)
+				switch event.Info.Ctype {
+				case ConnTypeConnect:
+					//conn := pes.GetConn(tgidFd)
+					conn := &Connection{
+						LocalIp:    network.ToIpAddr(event.Info.Saddr.In4.SinAddr.S_addr),
+						RemoteIp:   network.ToIpAddr(event.Info.Daddr.In4.SinAddr.S_addr),
+						LocalPort:  network.Port(event.Info.Saddr.In4.SinPort),
+						RemotePort: network.Port(event.Info.Daddr.In4.SinPort),
+						reqStream:  &network.StreamBuffer{},
+						respStream: &network.StreamBuffer{},
+						connTime:   event.Ts,
+					}
+					//vlog.Println("connect", conn.LocalIp.String(), conn.LocalPort, conn.RemoteIp.String(), conn.RemotePort, conn.protocol(), event.Ts)
+					p.pes.AddConn(tgidFd, conn)
+				case ConnTypeClose:
+					conn := p.pes.GetConnWithTs(tgidFd, event.Ts)
+					//vlog.Println("close", conn.LocalIp.String(), conn.LocalPort, conn.RemoteIp.String(), conn.RemotePort, conn.protocol(), event.Ts)
+					if conn != nil {
+						conn.closeTime = event.Ts
+						go func() {
+							timer := time.NewTimer(1 * time.Second)
+							defer timer.Stop()
+							runtime.Gosched()
+							<-timer.C
+							conn.isClose = true
+						}()
+					}
+				case ConnTypProtocolInfer:
+					conn := p.pes.GetConnWithTs(tgidFd, event.Ts)
+					if conn != nil {
+						conn.Protocol = event.Info.Protocol
+						//vlog.Println("infer", conn.LocalIp.String(), conn.LocalPort, conn.RemoteIp.String(), conn.RemotePort, conn.protocol(), event.Ts)
+						if conn.protocol() == "http" {
+							if len(conn.tempMsgEvt) > 0 {
+								for _, event := range conn.tempMsgEvt {
+									if event.Meta.MsgType == 1 { //请求
+										conn.reqStream.Add(event.Meta.Ts, event.Meta.Seq, int8ArrayToByteNoCopy(event.Msg[:event.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
+									} else if event.Meta.MsgType == 2 { //响应
+										conn.respStream.Add(event.Meta.Ts, event.Meta.Seq, int8ArrayToByteNoCopy(event.Msg[:event.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
+									}
+									parser := network.HttpParser{}
+									requests := parser.ParseRequest(conn.reqStream)
+									response := parser.ParseResponse(conn.respStream)
+									conn.requests = append(conn.requests, requests...)
+									conn.response = append(conn.response, response...)
+									records := conn.match()
+									for _, rec := range records {
+										fmt.Println(rec.req.URI, string(rec.resp.Body))
+									}
+								}
+								conn.tempMsgEvt = conn.tempMsgEvt[:0]
+							}
+						}
+
+					}
+				}
+			case event := <-p.msgEvt:
+				tgidFd := event.Meta.TgidFd
+				conn := p.pes.GetConnWithTs(tgidFd, event.Meta.Ts)
+				//vlog.Println("msg1", event.Meta.Ts)
+				if conn == nil {
+					continue
+				}
+				//vlog.Println("msg", conn.LocalIp.String(), conn.LocalPort, conn.RemoteIp.String(), conn.RemotePort, conn.protocol(), event.Meta.Ts)
+
+				if conn.protocol() == "unset" {
+					//把事件缓存起来
+					conn.tempMsgEvt = append(conn.tempMsgEvt, event)
+					continue
+				}
+				if conn.protocol() != "http" {
+					continue
+				}
+				if len(event.Msg[:event.BufSize]) == 0 {
+					continue
+				}
+				if event.Meta.MsgType == 1 { //请求
+					conn.reqStream.Add(event.Meta.Ts, event.Meta.Seq, int8ArrayToByteNoCopy(event.Msg[:event.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
+				} else if event.Meta.MsgType == 2 { //响应
+					conn.respStream.Add(event.Meta.Ts, event.Meta.Seq, int8ArrayToByteNoCopy(event.Msg[:event.BufSize])) //buffers.Write(int8ArrayToByteNoCopy(evtData.Msg[:evtData.BufSize]))
+				}
+				parser := network.HttpParser{}
+				requests := parser.ParseRequest(conn.reqStream)
+				response := parser.ParseResponse(conn.respStream)
+				conn.requests = append(conn.requests, requests...)
+				conn.response = append(conn.response, response...)
+				records := conn.match()
+				for _, rec := range records {
+					fmt.Println(rec.req.URI, string(rec.resp.Body))
+				}
+			}
+		}
+	}()
 }
 
 // processSocket processes 100 packets from socket.

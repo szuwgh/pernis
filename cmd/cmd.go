@@ -37,17 +37,17 @@ var listcmd = &cobra.Command{
 	Run:   listcmdFunc,
 }
 
-var tcpcmd = &cobra.Command{
-	Use:   "tcp",
-	Short: "show version",
-	Run:   tcpcmdFunc,
-}
+// var tcpcmd = &cobra.Command{
+// 	Use:   "tcp",
+// 	Short: "show version",
+// 	Run:   tcpcmdFunc,
+// }
 
-var gotlscmd = &cobra.Command{
-	Use:   "gotls",
-	Short: "show version",
-	Run:   tcpcmdFunc,
-}
+// var gotlscmd = &cobra.Command{
+// 	Use:   "gotls",
+// 	Short: "show version",
+// 	Run:   tcpcmdFunc,
+// }
 
 var tlscmd = &cobra.Command{
 	Use:   "tls",
@@ -66,7 +66,7 @@ func init() {
 	rootCmd.AddCommand(listcmd)
 	rootCmd.AddCommand(tcCmd)
 	rootCmd.AddCommand(rmcmd)
-	rootCmd.AddCommand(tcpcmd)
+	//rootCmd.AddCommand(tcpcmd)
 	rootCmd.AddCommand(tlscmd)
 	rootCmd.AddCommand(httpcmd)
 }
@@ -112,14 +112,14 @@ func tlscmdFunc(command *cobra.Command, args []string) {
 
 }
 
-func tcpcmdFunc(command *cobra.Command, args []string) {
-	vlog.Println("tcp")
-	err := user.AttachTcpSendMsgKprobe()
-	if err != nil {
-		vlog.Println(err)
-	}
+// func tcpcmdFunc(command *cobra.Command, args []string) {
+// 	vlog.Println("tcp")
+// 	err := user.AttachTcpSendMsgKprobe()
+// 	if err != nil {
+// 		vlog.Println(err)
+// 	}
 
-}
+// }
 
 func httpcmdFunc(command *cobra.Command, args []string) {
 	vlog.Println("http")

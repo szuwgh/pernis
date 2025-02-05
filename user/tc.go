@@ -9,12 +9,12 @@ import (
 	"syscall"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/rlimit"
-	"github.com/szuwgh/pernis/common/bpf"
+	//"github.com/cilium/ebpf/rlimit"
+	//"github.com/szuwgh/pernis/common/bpf"
 	"github.com/szuwgh/pernis/common/inet"
 	"github.com/szuwgh/pernis/common/vlog"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
+	//"golang.org/x/sys/unix"
 )
 
 // 1:   root qdisc
@@ -379,45 +379,45 @@ func RmTcQdisc(ifName string, handle uint32) (err error) {
 	return
 }
 
-func DeleteEbpfTc(ifName string, qdisc uint32) (err error) {
-	// 创建一个 netlink socket
-	link, err := netlink.LinkByName(ifName)
-	if err != nil {
-		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
-	}
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		vlog.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
-	mapInfo, err := objs.TcDaddrMap.Info()
-	if err != nil {
-		return err
-	}
-	mapPath := BpfFsPath + mapInfo.Name
-	err = bpf.UnMapPinned(mapPath)
-	if err != nil {
-		return err
-	}
-	filter := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    qdisc,
-			Protocol:  unix.ETH_P_IP,
-			Priority:  1,
-		},
-		Fd:           objs.TcEgress.FD(),
-		Name:         objs.TcEgress.String(),
-		DirectAction: false,
-	}
+// func DeleteEbpfTc(ifName string, qdisc uint32) (err error) {
+// 	// 创建一个 netlink socket
+// 	link, err := netlink.LinkByName(ifName)
+// 	if err != nil {
+// 		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+// 	}
+// 	if err := loadBpfObjects(&objs, nil); err != nil {
+// 		vlog.Fatalf("loading objects: %v", err)
+// 	}
+// 	defer objs.Close()
+// 	mapInfo, err := objs.TcDaddrMap.Info()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	mapPath := BpfFsPath + mapInfo.Name
+// 	err = bpf.UnMapPinned(mapPath)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	filter := &netlink.BpfFilter{
+// 		FilterAttrs: netlink.FilterAttrs{
+// 			LinkIndex: link.Attrs().Index,
+// 			Parent:    qdisc,
+// 			Protocol:  unix.ETH_P_IP,
+// 			Priority:  1,
+// 		},
+// 		Fd:           objs.TcEgress.FD(),
+// 		Name:         objs.TcEgress.String(),
+// 		DirectAction: false,
+// 	}
 
-	err = netlink.FilterDel(filter)
-	if err != nil {
-		vlog.Println("Failed to del filter:", err)
-		return
-	}
+// 	err = netlink.FilterDel(filter)
+// 	if err != nil {
+// 		vlog.Println("Failed to del filter:", err)
+// 		return
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func DeleteTcClass(ifName string, qdisc uint32, handle uint32) (err error) {
 	// 创建一个 netlink socket
@@ -442,49 +442,49 @@ func DeleteTcClass(ifName string, qdisc uint32, handle uint32) (err error) {
 	return nil
 }
 
-func AttachEbpfTc(ifName string, qdisc uint32) (err error) {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		vlog.Fatal(err)
-	}
-	// 创建一个 netlink socket
-	link, err := netlink.LinkByName(ifName)
-	if err != nil {
-		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
-	}
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		vlog.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
+// func AttachEbpfTc(ifName string, qdisc uint32) (err error) {
+// 	if err := rlimit.RemoveMemlock(); err != nil {
+// 		vlog.Fatal(err)
+// 	}
+// 	// 创建一个 netlink socket
+// 	link, err := netlink.LinkByName(ifName)
+// 	if err != nil {
+// 		return fmt.Errorf("getting interface %s by name: %w", ifName, err)
+// 	}
+// 	if err := loadBpfObjects(&objs, nil); err != nil {
+// 		vlog.Fatalf("loading objects: %v", err)
+// 	}
+// 	defer objs.Close()
 
-	if !bpf.IsMapPinned(TC_DADDR_MAP_PATH) {
-		err = objs.TcDaddrMap.Pin(TC_DADDR_MAP_PATH)
-		if err != nil {
-			return fmt.Errorf("failed to pin map %s", err)
-		}
-	} else {
-		return fmt.Errorf("failed to attach bpf map have to pin, try removing ebpf and then attach ebpf")
-	}
+// 	if !bpf.IsMapPinned(TC_DADDR_MAP_PATH) {
+// 		err = objs.TcDaddrMap.Pin(TC_DADDR_MAP_PATH)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to pin map %s", err)
+// 		}
+// 	} else {
+// 		return fmt.Errorf("failed to attach bpf map have to pin, try removing ebpf and then attach ebpf")
+// 	}
 
-	filter := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    qdisc,
-			Protocol:  unix.ETH_P_IP,
-			Priority:  1,
-		},
-		Fd:           objs.TcEgress.FD(),
-		Name:         objs.TcEgress.String(),
-		DirectAction: false,
-	}
+// 	filter := &netlink.BpfFilter{
+// 		FilterAttrs: netlink.FilterAttrs{
+// 			LinkIndex: link.Attrs().Index,
+// 			Parent:    qdisc,
+// 			Protocol:  unix.ETH_P_IP,
+// 			Priority:  1,
+// 		},
+// 		Fd:           objs.TcEgress.FD(),
+// 		Name:         objs.TcEgress.String(),
+// 		DirectAction: false,
+// 	}
 
-	err = netlink.FilterReplace(filter)
-	if err != nil {
-		vlog.Println("Failed to add filter:", err)
-		return
-	}
+// 	err = netlink.FilterReplace(filter)
+// 	if err != nil {
+// 		vlog.Println("Failed to add filter:", err)
+// 		return
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func ObserveTC(ifName string) (err error) {
 

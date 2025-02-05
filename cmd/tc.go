@@ -34,10 +34,10 @@ var tcDelCmd = &cobra.Command{
 	Use: "del",
 }
 
-var tcDelBpfCmd = &cobra.Command{
-	Use: "bpf",
-	Run: delBpfCmdFunc,
-}
+// var tcDelBpfCmd = &cobra.Command{
+// 	Use: "bpf",
+// 	Run: delBpfCmdFunc,
+// }
 
 var tcDelClassCmd = &cobra.Command{
 	Use: "class",
@@ -81,10 +81,10 @@ var tcAddCmd = &cobra.Command{
 	Use: "add",
 }
 
-var tcAddBpfCmd = &cobra.Command{
-	Use: "bpf",
-	Run: addBpfCmdFunc,
-}
+// var tcAddBpfCmd = &cobra.Command{
+// 	Use: "bpf",
+// 	Run: addBpfCmdFunc,
+// }
 
 var tcAddClassCmd = &cobra.Command{
 	Use: "class",
@@ -105,9 +105,9 @@ func init() {
 	//********* add *************//
 	tcCmd.AddCommand(tcAddCmd)
 
-	tcAddCmd.AddCommand(tcAddBpfCmd)
-	tcAddBpfCmd.Flags().Uint32P("qdisc", "q", 0, "Set qdisc handle")
-	tcAddBpfCmd.MarkFlagRequired("qdisc")
+	//tcAddCmd.AddCommand(tcAddBpfCmd)
+	//tcAddBpfCmd.Flags().Uint32P("qdisc", "q", 0, "Set qdisc handle")
+	//tcAddBpfCmd.MarkFlagRequired("qdisc")
 
 	tcAddCmd.AddCommand(tcAddClassCmd)
 	tcAddClassCmd.Flags().Uint16P("index", "", 1, "class handle")
@@ -137,8 +137,8 @@ func init() {
 	//********* Del *************//
 	tcCmd.AddCommand(tcDelCmd)
 
-	tcDelCmd.AddCommand(tcDelBpfCmd)
-	tcDelBpfCmd.Flags().Uint32P("qdisc", "q", 0, "set qdisc handle")
+	//tcDelCmd.AddCommand(tcDelBpfCmd)
+	//tcDelBpfCmd.Flags().Uint32P("qdisc", "q", 0, "set qdisc handle")
 
 	tcDelCmd.AddCommand(tcDelClassCmd)
 	tcDelClassCmd.Flags().Uint32P("qdisc", "q", 0, "set qdisc handle")
@@ -160,16 +160,16 @@ func initCmdFunc(command *cobra.Command, args []string) {
 	}
 }
 
-func addBpfCmdFunc(command *cobra.Command, args []string) {
-	qdisc := getFlagUint32(command, "qdisc")
-	err := user.AttachEbpfTc(Interface, qdisc)
-	if err != nil {
-		vlog.Println(err)
-	} else {
-		vlog.Println("attach ebpf success")
-	}
+// func addBpfCmdFunc(command *cobra.Command, args []string) {
+// 	qdisc := getFlagUint32(command, "qdisc")
+// 	err := user.AttachEbpfTc(Interface, qdisc)
+// 	if err != nil {
+// 		vlog.Println(err)
+// 	} else {
+// 		vlog.Println("attach ebpf success")
+// 	}
 
-}
+// }
 
 func addClassCmdFunc(command *cobra.Command, args []string) {
 	rate := getFlagString(command, "rate")
@@ -195,15 +195,15 @@ func addIpCmdFunc(command *cobra.Command, args []string) {
 	}
 }
 
-func delBpfCmdFunc(command *cobra.Command, args []string) {
-	qdisc := getFlagUint32(command, "qdisc")
-	err := user.DeleteEbpfTc(Interface, qdisc)
-	if err != nil {
-		vlog.Fatalln(err)
-	} else {
-		vlog.Println("del ebpf success")
-	}
-}
+// func delBpfCmdFunc(command *cobra.Command, args []string) {
+// 	qdisc := getFlagUint32(command, "qdisc")
+// 	err := user.DeleteEbpfTc(Interface, qdisc)
+// 	if err != nil {
+// 		vlog.Fatalln(err)
+// 	} else {
+// 		vlog.Println("del ebpf success")
+// 	}
+// }
 
 func delClassCmdFunc(command *cobra.Command, args []string) {
 	qdisc := getFlagUint32(command, "qdisc")

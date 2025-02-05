@@ -132,34 +132,26 @@ type bpfProgramSpecs struct {
 	TracepointSyscallsSysExitClose    *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_close"`
 	TracepointSyscallsSysExitRead     *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_read"`
 	TracepointSyscallsSysExitWrite    *ebpf.ProgramSpec `ebpf:"tracepoint_syscalls_sys_exit_write"`
-	UprobeSSL_read                    *ebpf.ProgramSpec `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write                   *ebpf.ProgramSpec `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read                 *ebpf.ProgramSpec `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite                 *ebpf.ProgramSpec `ebpf:"uretprobe_ssl_write"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	AcceptArgsMap         *ebpf.MapSpec `ebpf:"accept_args_map"`
-	ActiveSslReadArgsMap  *ebpf.MapSpec `ebpf:"active_ssl_read_args_map"`
-	ActiveSslWriteArgsMap *ebpf.MapSpec `ebpf:"active_ssl_write_args_map"`
-	CloseArgsMap          *ebpf.MapSpec `ebpf:"close_args_map"`
-	ConnEvtRb             *ebpf.MapSpec `ebpf:"conn_evt_rb"`
-	ConnInfoMap           *ebpf.MapSpec `ebpf:"conn_info_map"`
-	ConnectArgsMap        *ebpf.MapSpec `ebpf:"connect_args_map"`
-	DataBufferHeap        *ebpf.MapSpec `ebpf:"data_buffer_heap"`
-	Httpevent             *ebpf.MapSpec `ebpf:"httpevent"`
-	Ipv4RecvBytes         *ebpf.MapSpec `ebpf:"ipv4_recv_bytes"`
-	Ipv4SendBytes         *ebpf.MapSpec `ebpf:"ipv4_send_bytes"`
-	MsgDataMap            *ebpf.MapSpec `ebpf:"msg_data_map"`
-	MsgEvtRb              *ebpf.MapSpec `ebpf:"msg_evt_rb"`
-	ProcHttpSession       *ebpf.MapSpec `ebpf:"proc_http_session"`
-	ReadArgsMap           *ebpf.MapSpec `ebpf:"read_args_map"`
-	TcDaddrMap            *ebpf.MapSpec `ebpf:"tc_daddr_map"`
-	TlsEvents             *ebpf.MapSpec `ebpf:"tls_events"`
-	WriteArgsMap          *ebpf.MapSpec `ebpf:"write_args_map"`
+	AcceptArgsMap   *ebpf.MapSpec `ebpf:"accept_args_map"`
+	CloseArgsMap    *ebpf.MapSpec `ebpf:"close_args_map"`
+	ConnEvtRb       *ebpf.MapSpec `ebpf:"conn_evt_rb"`
+	ConnInfoMap     *ebpf.MapSpec `ebpf:"conn_info_map"`
+	ConnectArgsMap  *ebpf.MapSpec `ebpf:"connect_args_map"`
+	Httpevent       *ebpf.MapSpec `ebpf:"httpevent"`
+	Ipv4RecvBytes   *ebpf.MapSpec `ebpf:"ipv4_recv_bytes"`
+	Ipv4SendBytes   *ebpf.MapSpec `ebpf:"ipv4_send_bytes"`
+	MsgDataMap      *ebpf.MapSpec `ebpf:"msg_data_map"`
+	MsgEvtRb        *ebpf.MapSpec `ebpf:"msg_evt_rb"`
+	ProcHttpSession *ebpf.MapSpec `ebpf:"proc_http_session"`
+	ReadArgsMap     *ebpf.MapSpec `ebpf:"read_args_map"`
+	TcDaddrMap      *ebpf.MapSpec `ebpf:"tc_daddr_map"`
+	WriteArgsMap    *ebpf.MapSpec `ebpf:"write_args_map"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -181,36 +173,29 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	AcceptArgsMap         *ebpf.Map `ebpf:"accept_args_map"`
-	ActiveSslReadArgsMap  *ebpf.Map `ebpf:"active_ssl_read_args_map"`
-	ActiveSslWriteArgsMap *ebpf.Map `ebpf:"active_ssl_write_args_map"`
-	CloseArgsMap          *ebpf.Map `ebpf:"close_args_map"`
-	ConnEvtRb             *ebpf.Map `ebpf:"conn_evt_rb"`
-	ConnInfoMap           *ebpf.Map `ebpf:"conn_info_map"`
-	ConnectArgsMap        *ebpf.Map `ebpf:"connect_args_map"`
-	DataBufferHeap        *ebpf.Map `ebpf:"data_buffer_heap"`
-	Httpevent             *ebpf.Map `ebpf:"httpevent"`
-	Ipv4RecvBytes         *ebpf.Map `ebpf:"ipv4_recv_bytes"`
-	Ipv4SendBytes         *ebpf.Map `ebpf:"ipv4_send_bytes"`
-	MsgDataMap            *ebpf.Map `ebpf:"msg_data_map"`
-	MsgEvtRb              *ebpf.Map `ebpf:"msg_evt_rb"`
-	ProcHttpSession       *ebpf.Map `ebpf:"proc_http_session"`
-	ReadArgsMap           *ebpf.Map `ebpf:"read_args_map"`
-	TcDaddrMap            *ebpf.Map `ebpf:"tc_daddr_map"`
-	TlsEvents             *ebpf.Map `ebpf:"tls_events"`
-	WriteArgsMap          *ebpf.Map `ebpf:"write_args_map"`
+	AcceptArgsMap   *ebpf.Map `ebpf:"accept_args_map"`
+	CloseArgsMap    *ebpf.Map `ebpf:"close_args_map"`
+	ConnEvtRb       *ebpf.Map `ebpf:"conn_evt_rb"`
+	ConnInfoMap     *ebpf.Map `ebpf:"conn_info_map"`
+	ConnectArgsMap  *ebpf.Map `ebpf:"connect_args_map"`
+	Httpevent       *ebpf.Map `ebpf:"httpevent"`
+	Ipv4RecvBytes   *ebpf.Map `ebpf:"ipv4_recv_bytes"`
+	Ipv4SendBytes   *ebpf.Map `ebpf:"ipv4_send_bytes"`
+	MsgDataMap      *ebpf.Map `ebpf:"msg_data_map"`
+	MsgEvtRb        *ebpf.Map `ebpf:"msg_evt_rb"`
+	ProcHttpSession *ebpf.Map `ebpf:"proc_http_session"`
+	ReadArgsMap     *ebpf.Map `ebpf:"read_args_map"`
+	TcDaddrMap      *ebpf.Map `ebpf:"tc_daddr_map"`
+	WriteArgsMap    *ebpf.Map `ebpf:"write_args_map"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
 		m.AcceptArgsMap,
-		m.ActiveSslReadArgsMap,
-		m.ActiveSslWriteArgsMap,
 		m.CloseArgsMap,
 		m.ConnEvtRb,
 		m.ConnInfoMap,
 		m.ConnectArgsMap,
-		m.DataBufferHeap,
 		m.Httpevent,
 		m.Ipv4RecvBytes,
 		m.Ipv4SendBytes,
@@ -219,7 +204,6 @@ func (m *bpfMaps) Close() error {
 		m.ProcHttpSession,
 		m.ReadArgsMap,
 		m.TcDaddrMap,
-		m.TlsEvents,
 		m.WriteArgsMap,
 	)
 }
@@ -244,10 +228,6 @@ type bpfPrograms struct {
 	TracepointSyscallsSysExitClose    *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_close"`
 	TracepointSyscallsSysExitRead     *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_read"`
 	TracepointSyscallsSysExitWrite    *ebpf.Program `ebpf:"tracepoint_syscalls_sys_exit_write"`
-	UprobeSSL_read                    *ebpf.Program `ebpf:"uprobe_SSL_read"`
-	UprobeSsL_write                   *ebpf.Program `ebpf:"uprobe_ssL_write"`
-	UretprobeSSL_read                 *ebpf.Program `ebpf:"uretprobe_SSL_read"`
-	UretprobeSslWrite                 *ebpf.Program `ebpf:"uretprobe_ssl_write"`
 }
 
 func (p *bpfPrograms) Close() error {
@@ -268,10 +248,6 @@ func (p *bpfPrograms) Close() error {
 		p.TracepointSyscallsSysExitClose,
 		p.TracepointSyscallsSysExitRead,
 		p.TracepointSyscallsSysExitWrite,
-		p.UprobeSSL_read,
-		p.UprobeSsL_write,
-		p.UretprobeSSL_read,
-		p.UretprobeSslWrite,
 	)
 }
 

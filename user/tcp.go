@@ -3,10 +3,9 @@ package user
 import (
 	"encoding/binary"
 	"net"
-	"time"
-
-	"github.com/cilium/ebpf/link"
-	"github.com/szuwgh/pernis/common/vlog"
+	//"time"
+	//"github.com/cilium/ebpf/link"
+	//"github.com/szuwgh/pernis/common/vlog"
 )
 
 // ebpf可通过跟踪内核函数，统计不同层次的网络流量。各层的流量差异主要在于包头，重传，控制报文等等。
@@ -35,73 +34,73 @@ type Ipv4KeyT struct {
 	Daddr uint32
 }
 
-func AttachTcpSendMsgKprobe() (err error) {
+// func AttachTcpSendMsgKprobe() (err error) {
 
-	if err := loadBpfObjects(&objs, nil); err != nil {
-		vlog.Fatalf("loading objects: %v", err)
-	}
-	defer objs.Close()
+// 	if err := loadBpfObjects(&objs, nil); err != nil {
+// 		vlog.Fatalf("loading objects: %v", err)
+// 	}
+// 	defer objs.Close()
 
-	kp, err := link.Kprobe(FN_TCP_SENDMSG, objs.KtcpSendmsg, nil)
-	if err != nil {
-		vlog.Fatalf("opening kprobe: %s", err)
-	}
-	defer kp.Close()
+// 	kp, err := link.Kprobe(FN_TCP_SENDMSG, objs.KtcpSendmsg, nil)
+// 	if err != nil {
+// 		vlog.Fatalf("opening kprobe: %s", err)
+// 	}
+// 	defer kp.Close()
 
-	kp2, err := link.Kprobe(FN_TCP_CLEANUP_RBUF, objs.KtcpCleanupRbuf, nil)
-	if err != nil {
-		vlog.Fatalf("opening kprobe: %s", err)
-	}
-	defer kp2.Close()
+// 	kp2, err := link.Kprobe(FN_TCP_CLEANUP_RBUF, objs.KtcpCleanupRbuf, nil)
+// 	if err != nil {
+// 		vlog.Fatalf("opening kprobe: %s", err)
+// 	}
+// 	defer kp2.Close()
 
-	// Read loop reporting the total amount of times the kernel
-	// function was entered, once per second.
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+// 	// Read loop reporting the total amount of times the kernel
+// 	// function was entered, once per second.
+// 	ticker := time.NewTicker(2 * time.Second)
+// 	defer ticker.Stop()
 
-	vlog.Println("Waiting for events..")
-	vlog.Printf("%-15s  -> %-15s  %-6s",
-		"Src addr",
-		"Dest addr",
-		"Bytes",
-	)
-	for range ticker.C {
-		var values1 []uint32
-		var key Ipv4KeyT
+// 	vlog.Println("Waiting for events..")
+// 	vlog.Printf("%-15s  -> %-15s  %-6s",
+// 		"Src addr",
+// 		"Dest addr",
+// 		"Bytes",
+// 	)
+// 	for range ticker.C {
+// 		var values1 []uint32
+// 		var key Ipv4KeyT
 
-		var values2 []uint32
-		// if err := objs.KprobeMap.Lookup(mapKey, &value); err != nil {
-		// 	vlog.Fatalf("reading map: %v", err)
-		// }
-		iter := objs.bpfMaps.Ipv4SendBytes.Iterate()
-		for iter.Next(&key, &values1) {
-			var sum1 uint32
-			for _, n := range values1 {
-				sum1 += n
-			}
-			saddr := key.Saddr
-			daddr := key.Daddr
-			vlog.Printf("%-15s -> %-15s  %-6d",
-				intToIP(saddr),
-				intToIP(daddr),
-				sum1,
-			)
-			//key.Saddr = saddr
-			//key.Daddr = daddr
-			objs.bpfMaps.Ipv4RecvBytes.Lookup(key, &values2)
-			var sum2 uint32
-			for _, n := range values2 {
-				sum2 += n
-			}
-			vlog.Printf("%-15s <- %-15s  %-6d",
-				intToIP(daddr),
-				intToIP(saddr),
-				sum2,
-			)
-		}
-	}
-	return nil
-}
+// 		var values2 []uint32
+// 		// if err := objs.KprobeMap.Lookup(mapKey, &value); err != nil {
+// 		// 	vlog.Fatalf("reading map: %v", err)
+// 		// }
+// 		iter := objs.bpfMaps.Ipv4SendBytes.Iterate()
+// 		for iter.Next(&key, &values1) {
+// 			var sum1 uint32
+// 			for _, n := range values1 {
+// 				sum1 += n
+// 			}
+// 			saddr := key.Saddr
+// 			daddr := key.Daddr
+// 			vlog.Printf("%-15s -> %-15s  %-6d",
+// 				intToIP(saddr),
+// 				intToIP(daddr),
+// 				sum1,
+// 			)
+// 			//key.Saddr = saddr
+// 			//key.Daddr = daddr
+// 			objs.bpfMaps.Ipv4RecvBytes.Lookup(key, &values2)
+// 			var sum2 uint32
+// 			for _, n := range values2 {
+// 				sum2 += n
+// 			}
+// 			vlog.Printf("%-15s <- %-15s  %-6d",
+// 				intToIP(daddr),
+// 				intToIP(saddr),
+// 				sum2,
+// 			)
+// 		}
+// 	}
+// 	return nil
+// }
 
 // intToIP converts IPv4 number to net.IP
 func intToIP(ipNum uint32) net.IP {

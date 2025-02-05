@@ -27,7 +27,8 @@ type SslDataEventT struct {
 func AttachSSLUprobe() (err error) {
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
-	if err := loadBpfObjects(&objs, nil); err != nil {
+	var objs ssl102aObjects
+	if err := loadSsl102aObjects(&objs, nil); err != nil {
 		vlog.Fatalf("loading objects: %v", err)
 	}
 	defer objs.Close()
